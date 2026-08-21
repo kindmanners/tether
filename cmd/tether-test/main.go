@@ -1,10 +1,9 @@
-package main
 // Command tether-test is a throwaway harness, not the real Tether
 // entrypoint. It exists to verify tailscale.go and allowlist.go work
 // against real data before registry.go's merge logic is built on top of
 // them. Delete this file (and cmd/tether-test/) once registry.go exists and
 // cmd/tether/main.go takes over as the real entrypoint.
-
+package main
 
 import (
 	"fmt"
@@ -44,18 +43,16 @@ func main() {
 	}
 
 	fmt.Println()
-	fmt.Println("=== Manual cross-check (registry.go doesn't exist yet, so eyeball this) ===")
-	for _, entry := range allowlist.Nodes {
-		found := false
-		for _, p := range peers {
-			if p.Hostname == entry.Hostname {
-				found = true
-				fmt.Printf("  MATCH: %s -> ip=%s online=%v\n", entry.Hostname, p.IPv4Address, p.Online)
-				break
-			}
-		}
-		if !found {
-			fmt.Printf("  NO MATCH: %s is in allowlist but was not seen as a live Tailscale peer\n", entry.Hostname)
-		}
+	fmt.Println("=== Testing Build() (real registry, not manual cross-check) ===")
+	reg := registry.Build(allowlist, peers)
+	for _, node := range reg.All() {
+		fmt.Printf("  hostname=%-12s status=%-16s ip=%-15s role=%-10s agentPort=%-6d rpcPort=%d\n",
+			node.Hostname, node.Status, node.TailscaleIP, node.Role, node.AgentPort, node.RPCPort)
+	}
+
+	fmt.Println()
+	fmt.Println("=== Online nodes only ===")
+	for _, node := range reg.Online() {
+		fmt.Printf("  %s (%s)\n", node.Hostname, node.TailscaleIP)
 	}
 }
