@@ -9,31 +9,31 @@
 package main
 
 import (
-    "fmt"
-    "os"
+	"fmt"
+	"os"
 
-    "tether/internal/registry"
+	"tether/internal/registry"
 )
 
 const allowlistPath = "node_allowlist.yaml"
 
 func main() {
-    allowlist, err := registry.LoadAllowlist(allowlistPath)
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "loading allowlist: %v\n", err)
-        os.Exit(1)
-    }
+	allowlist, err := registry.LoadAllowlist(allowlistPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loading allowlist: %v\n", err)
+		os.Exit(1)
+	}
 
-    peers, err := registry.QueryTailscalePeers()
-    if err != nil {
-        fmt.Fprintf(os.Stderr, "querying tailscale: %v\n", err)
-        os.Exit(1)
-    }
+	peers, err := registry.QueryTailscalePeers()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "querying tailscale: %v\n", err)
+		os.Exit(1)
+	}
 
-    reg := registry.Build(allowlist, peers)
+	reg := registry.Build(allowlist, peers)
 
-    fmt.Println("Tether nodes:")
-    for _, node := range reg.All() {
-        fmt.Printf("  %-12s %-16s %s\n", node.Hostname, node.Status, node.TailscaleIP)
-    }
+	fmt.Println("Tether nodes:")
+	for _, node := range reg.All() {
+		fmt.Printf("  %-12s %-16s %s\n", node.Hostname, node.Status, node.TailscaleIP)
+	}
 }
