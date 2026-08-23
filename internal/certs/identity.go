@@ -26,6 +26,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -115,25 +116,40 @@ func LoadOrCreate(name string) (*Identity, error) {
 	return identity, nil
 }
 
+// windowsReservedNames are filenames Windows treats specially regardless
+// of extension — see internal/trust/store.go's copy of this same table
+// for the fuller reasoning on why this is checked unconditionally on
+// every platform, not just when actually running on Windows.
+var windowsReservedNames = map[string]bool{
+	"CON": true, "PRN": true, "AUX": true, "NUL": true,
+	"COM1": true, "COM2": true, "COM3": true, "COM4": true, "COM5": true,
+	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
+	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
+	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
+}
+
 // validateName rejects anything that isn't a plain filename component.
 //
-// Two checks, for two different attack shapes:
-//   - filepath.Base(name) != name catches path separators and genuine
-//     multi-component paths (e.g. "sub/dir", "../../etc/passwd") — Base()
-//     strips everything down to the last component, so anything that
-//     changes under Base() contained a separator.
-//   - name == ".." (or ".") is checked explicitly, because Base("..") is
-//     ".." unchanged — a bare ".." contains no separator for Base() to
-//     strip, so the first check alone does not catch it. This currently
-//     happens to be harmless given how callers build paths (name is
-//     always used as a "name"+".key" suffix, which turns ".." into the
-//     literal filename "...key", not a real traversal) — but that safety
-//     is an accident of the current concatenation shape elsewhere in this
-//     file, not a property this function should rely on. If a future
-//     change ever uses name as a directory component instead of a
-//     filename prefix, an unblocked ".." becomes a real traversal again.
-//     Rejecting it here closes the gap for good, independent of how
-//     callers happen to use the value today.
+// Does NOT rely on filepath.Base alone for separator detection — that
+// function's separator handling is platform-dependent (only '/' on
+// Linux, both '/' and '\' on Windows). Since this same validation logic
+// runs unmodified on both the Orchestrator (any OS) and every Agent (any
+// OS), and identity names can in principle be influenced by data that
+// crossed machine boundaries, a backslash needs rejecting on Linux just
+// as much as on Windows — relying on the host OS's own filepath.Base to
+// decide that would silently under-validate on whichever platform isn't
+// currently running the check. We check both separator characters
+// explicitly, then still run filepath.Base as a belt-and-suspenders
+// second check for anything platform-specific it might catch beyond
+// plain separators (e.g. Windows volume/prefix syntax).
+//
+// Also rejects "." and ".." explicitly — filepath.Base leaves both
+// unchanged (nothing to strip, since neither contains a separator), so it
+// alone doesn't catch them; found via testing (see internal/certs commit
+// history) rather than assumed. And rejects Windows reserved device names
+// (CON, NUL, COM1, etc.) unconditionally, since a name that's fine on
+// Linux but breaks file creation only on Windows would otherwise surface
+// as a confusing, hard-to-diagnose failure specific to one platform.
 func validateName(name string) error {
 	if name == "" {
 		return fmt.Errorf("name cannot be empty")
@@ -141,8 +157,14 @@ func validateName(name string) error {
 	if name == "." || name == ".." {
 		return fmt.Errorf("name cannot be %q", name)
 	}
+	if strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("name cannot contain path separators")
+	}
 	if filepath.Base(name) != name {
 		return fmt.Errorf("name must be a plain filename component, not a path")
+	}
+	if windowsReservedNames[strings.ToUpper(name)] {
+		return fmt.Errorf("name %q is a reserved Windows device name", name)
 	}
 	return nil
 }
