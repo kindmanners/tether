@@ -51,8 +51,10 @@ func (s NodeStatus) String() string {
 // Node struct doesn't need a breaking change later when scheduling logic
 // needs it (design doc §4.3).
 type NodeCapabilities struct {
+	CPUModel string
 	GPUModel  string
-	VRAMTotal int64 // bytes; 0 means unknown/not yet probed
+	VRAMTotal int64
+	RAMTotal int64
 }
 
 // Node represents a single machine the registry knows about. A Node only

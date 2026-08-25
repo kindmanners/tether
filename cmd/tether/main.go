@@ -11,7 +11,6 @@ package main
 import (
 	"fmt"
 	"os"
-
 	"tether/internal/registry"
 )
 

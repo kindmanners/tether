@@ -38,10 +38,11 @@ const codeLength = 6
 // minutes" decision.
 const Window = 2 * time.Minute
 
-// Code is a single pairing code with its own expiry, generated fresh for
-// one specific pairing attempt. A Code is meant to be used once — see
-// Consume — not reused across multiple pairing attempts, even if it
-// hasn't expired yet.
+// Code is a pairing code with its own expiry, generated fresh for one
+// specific pairing attempt. A correct guess consumes it — it cannot
+// succeed twice. A WRONG guess does NOT consume it — see Consume's doc
+// comment for why that distinction matters (a previous version burned on
+// any attempt and had a real denial-of-service problem as a result).
 //
 // mu guards consumed. Consume is expected to be called from an HTTP
 // handler (net/http serves each request in its own goroutine by default),
@@ -82,9 +83,27 @@ func (c *Code) ExpiresAt() time.Time {
 }
 
 // Consume checks the given candidate string against this Code and, if it
-// matches and the code is still valid and unused, marks it used and
-// returns true. Returns false for any mismatch, expiry, or a code that
-// was already consumed once.
+// matches and the code is still valid, marks it used and returns true.
+// Returns false for any mismatch or expiry.
+//
+// IMPORTANT — a WRONG guess does NOT burn the code. Only a correct match
+// does. This was not the original design: Consume used to burn the code
+// on any attempt, matched or not, reasoning that a pairing code should
+// allow exactly one guess. That turned out to be a real mistake, found
+// during review — it meant a single wrong guess (deliberate or
+// accidental, e.g. an attacker scanning the tailnet and POSTing garbage
+// to /pair) would permanently kill the pairing session for the
+// legitimate human who hasn't typed the correct code in yet, a trivial
+// denial-of-service against the one thing this whole mechanism exists to
+// protect.
+//
+// Removing burn-on-mismatch is safe because Window, not per-attempt
+// burning, is what actually bounds brute-force risk here: at ~30 bits of
+// entropy (32^6 ≈ 1.07 billion possibilities) and a 2-minute window, even
+// a sustained 100 req/s attacker gets only ~12,000 attempts — roughly
+// 1-in-90,000 odds of a hit. Burn-on-mismatch was defense-in-depth that
+// cost far more (a trivial DoS) than it bought (marginal brute-force
+// resistance the window already provides).
 //
 // candidate is normalized (trimmed of whitespace, uppercased) before
 // comparison. Humans copying a short code from one screen and typing it
@@ -96,14 +115,13 @@ func (c *Code) ExpiresAt() time.Time {
 //
 // This is intentionally the ONLY way to check a Code — there is no
 // separate "peek" method that checks validity without consuming. A
-// pairing code should be usable exactly once; if a caller could check
-// validity without consuming, a network retry or a duplicate request
-// could let two callers both see "still valid" and both proceed, which
-// defeats the single-use guarantee documented in design doc §6.2, step 5.
-// The whole check-and-set sequence is done under mu so this guarantee
-// actually holds under concurrent calls, not just when called from a
-// single goroutine — see the Code struct's doc comment for why that
-// distinction matters.
+// successful match should be usable exactly once; if a caller could
+// check validity without consuming, a network retry or a duplicate
+// request could let two callers both see "still valid" and both
+// proceed. The whole check-and-set sequence is done under mu so this
+// guarantee actually holds under concurrent calls, not just when called
+// from a single goroutine — see the Code struct's doc comment for why
+// that distinction matters.
 func (c *Code) Consume(candidate string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -120,14 +138,15 @@ func (c *Code) Consume(candidate string) bool {
 	// Constant-time comparison isn't used here deliberately: this
 	// comparison happens locally within the Agent process (candidate
 	// arrives over the network, but comparison itself is in-process), and
-	// the code's short lifetime plus the pairing window's coarser
-	// rate-limiting (see the future pairing server, which should reject
-	// attempts outside the window entirely) matter far more here than
-	// microsecond-level timing side-channels on a 6-character comparison
-	// that's already invalidated after one attempt regardless of outcome.
-	match := normalized == c.value
-	c.consumed = true // single-use regardless of match — see doc comment above
-	return match
+	// the code's short lifetime plus its bounded entropy (see the doc
+	// comment above) matter far more here than microsecond-level timing
+	// side-channels on a 6-character comparison.
+	if normalized != c.value {
+		return false
+	}
+
+	c.consumed = true
+	return true
 }
 
 // randomCode generates a random string of the given length drawn from

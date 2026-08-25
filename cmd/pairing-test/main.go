@@ -36,7 +36,14 @@ func main() {
 	}
 
 	fmt.Println()
-	fmt.Println("=== Test 3: wrong code is rejected, and burns the attempt ===")
+	fmt.Println("=== Test 3: wrong code is rejected, but does NOT burn the code ===")
+	// This behavior flipped after review: an earlier version burned the
+	// code on ANY attempt, matched or not. That created a trivial
+	// denial-of-service — anyone who could reach the endpoint (not just
+	// the legitimate user) could kill a pairing session with one wrong
+	// guess, before the real user ever got to type the correct code.
+	// This test now asserts the FIXED behavior: a wrong guess is
+	// rejected, but the code remains usable afterward.
 	code2, _ := pairing.Generate()
 	if code2.Consume("WRONGCODE") {
 		fmt.Println("  FAIL: wrong code was accepted")
@@ -44,9 +51,9 @@ func main() {
 		fmt.Println("  PASS: wrong code correctly rejected")
 	}
 	if code2.Consume(code2.String()) {
-		fmt.Println("  FAIL: correct code worked AFTER a wrong guess — should be burned by the failed attempt")
+		fmt.Println("  PASS: correct code still works AFTER a wrong guess — DoS fix confirmed")
 	} else {
-		fmt.Println("  PASS: code correctly burned after one wrong guess, even though it hadn't expired")
+		fmt.Println("  FAIL: correct code was rejected after a prior wrong guess — DoS vulnerability is back")
 	}
 
 	fmt.Println()
@@ -99,6 +106,45 @@ func main() {
 	code5, _ := pairing.Generate()
 	remaining := time.Until(code5.ExpiresAt())
 	fmt.Printf("  code expires in %s (should be ~2m0s)\n", remaining.Round(time.Second))
+
+	fmt.Println()
+	fmt.Println("=== Test 7: concrete DoS-fix proof — many wrong guesses cannot block one correct one ===")
+	// Directly simulates the scenario the finding described: an attacker
+	// (or many) hammering the endpoint with wrong guesses, concurrently
+	// with the legitimate user's correct attempt arriving at some
+	// unpredictable point in the middle. Before the fix, ANY one of the
+	// wrong guesses (even the very first) would have permanently killed
+	// the code. After the fix, the correct guess should succeed
+	// regardless of how many wrong guesses surround it.
+	code6, _ := pairing.Generate()
+	const wrongAttempts = 100
+	var wg2 sync.WaitGroup
+	var wrongSuccesses int64
+	wg2.Add(wrongAttempts + 1)
+	for i := 0; i < wrongAttempts; i++ {
+		go func(n int) {
+			defer wg2.Done()
+			if code6.Consume(fmt.Sprintf("WRONG%d", n)) {
+				atomic.AddInt64(&wrongSuccesses, 1)
+			}
+		}(i)
+	}
+	var legitimateSucceeded int64
+	go func() {
+		defer wg2.Done()
+		if code6.Consume(code6.String()) {
+			atomic.AddInt64(&legitimateSucceeded, 1)
+		}
+	}()
+	wg2.Wait()
+	fmt.Printf("  %d concurrent wrong guesses + 1 correct guess, all racing\n", wrongAttempts)
+	fmt.Printf("  wrong guesses that incorrectly succeeded: %d (must be 0)\n", wrongSuccesses)
+	fmt.Printf("  legitimate correct guess succeeded: %v (must be true)\n", legitimateSucceeded == 1)
+	if wrongSuccesses == 0 && legitimateSucceeded == 1 {
+		fmt.Println("  PASS: DoS fix holds even under concurrent attacker + legitimate traffic")
+	} else {
+		fmt.Println("  FAIL: either a wrong guess succeeded, or the legitimate guess was blocked")
+	}
 }
 
 func toLowerASCII(s string) string {
