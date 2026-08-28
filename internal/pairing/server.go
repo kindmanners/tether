@@ -74,6 +74,7 @@ type pairErrorResponse struct {
 type Server struct {
 	code          *Code
 	agentIdentity *certs.Identity
+	window        time.Duration
 
 	mu     sync.Mutex
 	result error // set once pairing completes or the window closes; nil result + done==true means success
@@ -83,15 +84,22 @@ type Server struct {
 
 // NewServer creates a pairing Server for a single pairing attempt, using
 // agentIdentity as this Agent's own certificate to present once a valid
-// code is received.
-func NewServer(agentIdentity *certs.Identity) (*Server, error) {
-	code, err := Generate()
+// code is received. window controls both how long the generated Code
+// stays valid AND how long Start listens before giving up — the two are
+// intentionally the same value, driven from one parameter, so they can't
+// drift apart (a Code that's still "valid" after the server has already
+// shut down, or vice versa, would be a confusing state to debug). Real
+// callers should pass pairing.Window; tests can pass a much shorter
+// duration to avoid waiting out a real 2-minute expiry.
+func NewServer(agentIdentity *certs.Identity, window time.Duration) (*Server, error) {
+	code, err := GenerateWithWindow(window)
 	if err != nil {
 		return nil, fmt.Errorf("generating pairing code: %w", err)
 	}
 	return &Server{
 		code:          code,
 		agentIdentity: agentIdentity,
+		window:        window,
 		doneCh:        make(chan struct{}),
 	}, nil
 }
@@ -131,7 +139,7 @@ func (s *Server) Start(addr string) error {
 		},
 	}
 
-	windowTimer := time.AfterFunc(Window, func() {
+	windowTimer := time.AfterFunc(s.window, func() {
 		s.finish(fmt.Errorf("pairing window expired with no valid attempt"))
 	})
 	defer windowTimer.Stop()

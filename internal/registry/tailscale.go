@@ -63,6 +63,47 @@ type LivePeer struct {
 	SeenAt      time.Time
 }
 
+// SelfHostname returns just this machine's own Tailscale short hostname
+// (e.g. "mathesis"), without the peer list. This is what the Agent uses
+// as its own identity name for internal/certs and internal/trust — using
+// the SAME hostname source the registry already uses (Tailscale's
+// DNSName, not the OS's own os.Hostname()) matters here specifically:
+// os.Hostname() can diverge from the Tailscale-derived name (e.g.
+// Eudaimonia's OS hostname is "Sand-PC", but its Tailscale DNSName-derived
+// short hostname is "eudaimonia" — the same HostName-vs-DNSName mismatch
+// documented on tailscalePeer above). If the Agent identified itself
+// using a different naming source than the registry uses to identify the
+// same machine, the two could silently disagree about what to call the
+// same node.
+//
+// Internally this calls the same `tailscale status --json` path as
+// QueryTailscalePeers rather than a separate lighter-weight query —
+// there's no cheaper way to get Self's DNSName than asking Tailscale for
+// full status, so we don't avoid the shell-out, but we do avoid building
+// the full peer list unnecessarily by not calling QueryTailscalePeers
+// itself.
+func SelfHostname() (string, error) {
+	cmd := exec.Command("tailscale", "status", "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return "", fmt.Errorf("tailscale status exited with error: %s", string(exitErr.Stderr))
+		}
+		return "", fmt.Errorf("running 'tailscale status --json': %w (is tailscale installed and on PATH?)", err)
+	}
+
+	var status tailscaleStatus
+	if err := json.Unmarshal(output, &status); err != nil {
+		return "", fmt.Errorf("parsing tailscale status JSON: %w", err)
+	}
+
+	hostname := shortHostname(status.Self.DNSName)
+	if hostname == "" {
+		return "", fmt.Errorf("tailscale status returned no usable DNSName for Self — is tailscale running and this device registered?")
+	}
+	return hostname, nil
+}
+
 // QueryTailscalePeers shells out to `tailscale status --json`, parses the
 // output, and returns a cleaned-up list of live peers.
 //
@@ -95,13 +136,16 @@ func QueryTailscalePeers() ([]LivePeer, error) {
 	peers := make([]LivePeer, 0, len(status.Peer)+1)
 
 	// Self is handled separately from the Peer loop below, and its Online
-	// field is deliberately never trusted. Tailscale has a known bug where
-	// Self.Online is not populated and can misreport as false even when
-	// the machine is plainly running (github.com/tailscale/tailscale
-	// issue #3564). We don't need Tailscale to tell us whether this
-	// machine is online — the fact that `tailscale status` just answered
-	// us at all is proof enough. Hardcoding Online: true here is more
-	// correct than trusting the field, not a shortcut.
+	// field is deliberately ignored rather than trusted. This isn't a
+	// workaround for a bug (Tailscale did have one — issue #3564 — but it
+	// was fixed in 2021, long before this was written; checked directly
+	// rather than assumed). The real reasoning holds independent of
+	// whether that field is ever accurate: if `tailscale status` just
+	// returned data to this process, that alone proves this machine is
+	// online — there's no informative sense in which Self.Online could
+	// meaningfully disagree with a query that just succeeded. We already
+	// have a strictly better signal than the field provides, so we use it
+	// instead of reading a field we don't need.
 	if selfHostname := shortHostname(status.Self.DNSName); selfHostname != "" {
 		peers = append(peers, LivePeer{
 			Hostname:    selfHostname,

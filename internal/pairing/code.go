@@ -58,15 +58,27 @@ type Code struct {
 	consumed  bool
 }
 
-// Generate creates a new pairing Code, valid for Window from now.
+// Generate creates a new pairing Code, valid for Window from now. This is
+// the entry point real callers should use — GenerateWithWindow exists
+// separately so tests can use a much shorter window than the real 2
+// minutes (waiting out a real 2-minute expiry in a test is impractical),
+// without making every caller specify a window it doesn't care about.
 func Generate() (*Code, error) {
+	return GenerateWithWindow(Window)
+}
+
+// GenerateWithWindow creates a new pairing Code valid for the given
+// duration rather than the default Window. See Generate's doc comment for
+// why this exists as a separate function instead of a parameter on
+// Generate itself.
+func GenerateWithWindow(window time.Duration) (*Code, error) {
 	value, err := randomCode(codeLength)
 	if err != nil {
 		return nil, fmt.Errorf("generating pairing code: %w", err)
 	}
 	return &Code{
 		value:     value,
-		expiresAt: time.Now().Add(Window),
+		expiresAt: time.Now().Add(window),
 	}, nil
 }
 
@@ -142,7 +154,7 @@ func (c *Code) Consume(candidate string) bool {
 	// comment above) matter far more here than microsecond-level timing
 	// side-channels on a 6-character comparison.
 	if normalized != c.value {
-		return false
+		return false // wrong guess: NOT burned, see doc comment above
 	}
 
 	c.consumed = true
