@@ -17,15 +17,13 @@ import (
 	"time"
 )
 
-// StartParams are the fully-resolved, already-validated parameters
-// needed to start rpc-server. Every field here should already have been
-// checked by the caller (port range validated, ModelPath resolved via
-// agentconfig.Resolve, never taken directly from a network request) —
-// see the package doc comment for why that separation matters.
+// StartParams are the fully-resolved, already-validated parameters needed to
+// start ggml-rpc-server. BinaryPath and Host come exclusively from the
+// Agent's local configuration; Port is validated by the command server.
 type StartParams struct {
 	BinaryPath string // from agentconfig.Config.RPCServerPath
+	Host       string // from agentconfig.Config.RPCListenHost
 	Port       int    // validated port number
-	ModelPath  string // from agentconfig.Config.Resolve(name), never a raw network-supplied path
 }
 
 // Status describes the current state of the managed process.
@@ -83,14 +81,12 @@ func (m *Manager) Start(params StartParams) error {
 		return fmt.Errorf("rpc-server is already running (pid %d) — stop it first", m.cmd.Process.Pid)
 	}
 
-	// llama.cpp's rpc-server flags: -m/--model and -p/--port are the
-	// actual flag names for the model path and listen port. Binding host
-	// is deliberately not exposed as a Manager-level parameter yet — see
-	// design doc's open items; worth revisiting once the Agent's own
-	// listen-address story (localhost-only vs tailnet-wide) is decided
-	// deliberately rather than defaulted here.
+	// ggml-rpc-server exposes local accelerator devices. It does NOT load a
+	// model: the Orchestrator-side llama-cli or llama-server loads the GGUF
+	// model and connects to this endpoint with --rpc. Host is local Agent
+	// configuration, never a remote command parameter.
 	cmd := exec.Command(params.BinaryPath,
-		"--model", params.ModelPath,
+		"--host", params.Host,
 		"--port", fmt.Sprintf("%d", params.Port),
 	)
 

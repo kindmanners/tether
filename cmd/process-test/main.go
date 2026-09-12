@@ -1,21 +1,21 @@
 // Command process-test verifies internal/process.Manager against a REAL
 // subprocess, launched through Manager.Start's actual, unmodified
-// argument construction (`binary --model X --port N`) — not llama.cpp's
-// real rpc-server (not guaranteed present in a dev environment, needs a
-// real model file), but a real, killable, waitable OS process
+// argument construction (`binary --host X --port N`) — not llama.cpp's
+// real ggml-rpc-server (not guaranteed present in a dev environment), but a
+// real, killable, waitable OS process
 // nonetheless, since Manager's own logic doesn't know or care what
 // binary it's managing.
 //
-// This same compiled binary acts as its own stand-in "rpc-server": the
-// --model VALUE (not a separate marker flag — Manager's argument shape
+// This same compiled binary acts as its own stand-in "ggml-rpc-server": the
+// --host VALUE (not a separate marker flag — Manager's argument shape
 // is fixed and leaves no room to smuggle one in) is used as the signal.
-// If --model's value is one of the sentinel strings below, this process
+// If --host's value is one of the sentinel strings below, this process
 // behaves as a helper instead of running the test suite. This means
 // every test exercises Manager's real, unmodified command construction,
 // not a workaround shape.
 //
-// Delete once the real Agent command server exists and exercises
-// process.Manager against real rpc-server.
+// Delete once the real Agent command server exercises process.Manager against
+// a real ggml-rpc-server.
 package main
 
 import (
@@ -28,32 +28,31 @@ import (
 )
 
 const (
-	// sleepHelperModel, when passed as --model, makes this process sleep
+	// sleepHelperHost, when passed as --host, makes this process sleep
 	// for --port's VALUE in seconds, then exit 0. Repurposing --port as
 	// a duration is a deliberate, harmless abuse of Manager's fixed
 	// argument shape for testing purposes only — Manager itself has no
 	// idea, and doesn't need to, since it only cares about process
 	// lifecycle, not what the flags mean to whatever binary it launches.
-	sleepHelperModel = "__process_test_sleep_helper__"
+	sleepHelperHost = "__process_test_sleep_helper__"
 
-	// crashHelperModel makes this process exit immediately with a
-	// distinct non-zero status — standing in for rpc-server crashing on
-	// startup (bad model file, port already in use, etc.).
-	crashHelperModel = "__process_test_crash_helper__"
+	// crashHelperHost makes this process exit immediately with a distinct
+	// non-zero status — standing in for ggml-rpc-server crashing on startup.
+	crashHelperHost = "__process_test_crash_helper__"
 
 	crashExitCode = 17
 )
 
-// helperModel and helperPortArg extract the --model and --port values
+// helperHost and helperPortArg extract the --host and --port values
 // Manager.Start actually passed, without depending on their exact
 // position in os.Args beyond "somewhere after the binary name" — kept
 // slightly more defensive than a fixed-index lookup so this doesn't
 // silently break if Manager's flag ORDER ever changes, only if the flag
 // NAMES change (which would be a deliberate, visible edit to Manager
 // itself).
-func helperModel() string {
+func helperHost() string {
 	for i := 1; i < len(os.Args)-1; i++ {
-		if os.Args[i] == "--model" {
+		if os.Args[i] == "--host" {
 			return os.Args[i+1]
 		}
 	}
@@ -70,13 +69,13 @@ func helperPortArg() string {
 }
 
 func main() {
-	switch helperModel() {
-	case sleepHelperModel:
+	switch helperHost() {
+	case sleepHelperHost:
 		var seconds int
 		fmt.Sscanf(helperPortArg(), "%d", &seconds)
 		time.Sleep(time.Duration(seconds) * time.Second)
 		os.Exit(0)
-	case crashHelperModel:
+	case crashHelperHost:
 		os.Exit(crashExitCode)
 	}
 	runTests()
@@ -122,7 +121,7 @@ func runTests() {
 		mgr := process.NewManager()
 		err := mgr.Start(process.StartParams{
 			BinaryPath: self,
-			ModelPath:  sleepHelperModel,
+			Host:       sleepHelperHost,
 			Port:       30, // sleep 30s — long enough that we control when it ends, via Stop()
 		})
 		if err != nil {
@@ -154,13 +153,13 @@ func runTests() {
 	fmt.Println("=== Test 4: double-Start fails while one is already running ===")
 	func() {
 		mgr := process.NewManager()
-		if err := mgr.Start(process.StartParams{BinaryPath: self, ModelPath: sleepHelperModel, Port: 10}); err != nil {
+		if err := mgr.Start(process.StartParams{BinaryPath: self, Host: sleepHelperHost, Port: 10}); err != nil {
 			fmt.Printf("  FAIL: first Start() failed unexpectedly: %v\n", err)
 			return
 		}
 		time.Sleep(300 * time.Millisecond)
 
-		err := mgr.Start(process.StartParams{BinaryPath: self, ModelPath: sleepHelperModel, Port: 10})
+		err := mgr.Start(process.StartParams{BinaryPath: self, Host: sleepHelperHost, Port: 10})
 		if err == nil {
 			fmt.Println("  FAIL: second Start() succeeded while one was already running")
 		} else {
@@ -176,7 +175,7 @@ func runTests() {
 	fmt.Println("=== Test 5: unexpected exit is detected as StatusCrashed, with LastExitError set ===")
 	func() {
 		mgr := process.NewManager()
-		if err := mgr.Start(process.StartParams{BinaryPath: self, ModelPath: crashHelperModel, Port: 0}); err != nil {
+		if err := mgr.Start(process.StartParams{BinaryPath: self, Host: crashHelperHost, Port: 0}); err != nil {
 			fmt.Printf("  FAIL: Start() failed unexpectedly: %v\n", err)
 			return
 		}
@@ -203,10 +202,10 @@ func runTests() {
 	fmt.Println("=== Test 6: after a crash, Start() can be called again (not permanently stuck) ===")
 	func() {
 		mgr := process.NewManager()
-		mgr.Start(process.StartParams{BinaryPath: self, ModelPath: crashHelperModel, Port: 0})
+		mgr.Start(process.StartParams{BinaryPath: self, Host: crashHelperHost, Port: 0})
 		time.Sleep(500 * time.Millisecond) // let it crash and be observed
 
-		err := mgr.Start(process.StartParams{BinaryPath: self, ModelPath: sleepHelperModel, Port: 5})
+		err := mgr.Start(process.StartParams{BinaryPath: self, Host: sleepHelperHost, Port: 5})
 		if err != nil {
 			fmt.Printf("  FAIL: Start() after a crash was rejected: %v\n", err)
 		} else {

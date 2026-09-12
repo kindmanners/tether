@@ -29,8 +29,7 @@ const maxRequestBytes = 64 * 1024
 const shutdownTimeout = 5 * time.Second
 
 type startRequest struct {
-	Model string `json:"model"`
-	Port  int    `json:"port"`
+	Port int `json:"port"`
 }
 
 type statusResponse struct {
@@ -125,21 +124,9 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The ONLY place a model path is obtained — from the Agent's own
-	// local, operator-approved list (internal/agentconfig), never from
-	// the request directly. req.Model is a lookup KEY, never treated as
-	// or used like a path. See agentconfig.Resolve's doc comment for why
-	// this closes off a path-traversal-flavored attack surface at the
-	// protocol level.
-	modelPath, err := s.config.Resolve(req.Model)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	err = s.manager.Start(process.StartParams{
+	err := s.manager.Start(process.StartParams{
 		BinaryPath: s.config.RPCServerPath,
-		ModelPath:  modelPath,
+		Host:       s.config.RPCListenHost,
 		Port:       req.Port,
 	})
 	if err != nil {
@@ -147,7 +134,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("agent: started rpc-server (model=%q port=%d)", req.Model, req.Port)
+	log.Printf("agent: started ggml-rpc-server (host=%q port=%d)", s.config.RPCListenHost, req.Port)
 	writeStatus(w, s.manager)
 }
 
@@ -162,7 +149,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("agent: stopped rpc-server")
+	log.Println("agent: stopped ggml-rpc-server")
 	writeStatus(w, s.manager)
 }
 

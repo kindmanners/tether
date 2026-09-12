@@ -15,8 +15,8 @@ type fakeCommandClient struct {
 	calls []string
 }
 
-func (c *fakeCommandClient) StartRPCServer(addr, model string, port int) (*agent.StatusResult, error) {
-	c.calls = append(c.calls, "start "+addr+" "+model+" "+strconv.Itoa(port))
+func (c *fakeCommandClient) StartRPCServer(addr string, port int) (*agent.StatusResult, error) {
+	c.calls = append(c.calls, "start "+addr+" "+strconv.Itoa(port))
 	return &agent.StatusResult{Status: "Running"}, nil
 }
 
@@ -33,7 +33,7 @@ func (c *fakeCommandClient) GetStatus(addr string) (*agent.StatusResult, error) 
 func TestControlNodeSendsStatusStartAndStop(t *testing.T) {
 	client := &fakeCommandClient{}
 	node := &registry.Node{Hostname: "node-alpha", RPCPort: 50052}
-	input := bufio.NewScanner(strings.NewReader("status\nstart\ntest-model\n\nstop\nquit\n"))
+	input := bufio.NewScanner(strings.NewReader("status\nstart\n\nstop\nquit\n"))
 	var output bytes.Buffer
 
 	if err := controlNode(input, &output, client, node, "100.64.0.1:7420"); err != nil {
@@ -42,7 +42,7 @@ func TestControlNodeSendsStatusStartAndStop(t *testing.T) {
 
 	wantCalls := []string{
 		"status 100.64.0.1:7420",
-		"start 100.64.0.1:7420 test-model 50052",
+		"start 100.64.0.1:7420 50052",
 		"stop 100.64.0.1:7420",
 	}
 	if got := strings.Join(client.calls, "\n"); got != strings.Join(wantCalls, "\n") {
@@ -58,7 +58,7 @@ func TestControlNodeSendsStatusStartAndStop(t *testing.T) {
 func TestControlNodeRejectsInvalidPortBeforeSendingStart(t *testing.T) {
 	client := &fakeCommandClient{}
 	node := &registry.Node{Hostname: "node-alpha", RPCPort: 50052}
-	input := bufio.NewScanner(strings.NewReader("start\ntest-model\nnot-a-port\nquit\n"))
+	input := bufio.NewScanner(strings.NewReader("start\nnot-a-port\nquit\n"))
 	var output bytes.Buffer
 
 	if err := controlNode(input, &output, client, node, "100.64.0.1:7420"); err != nil {

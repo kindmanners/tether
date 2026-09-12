@@ -151,15 +151,15 @@ func pair(stdin *bufio.Scanner, identity *certs.Identity, node *registry.Node, a
 // be tested without a network connection; agent.Client remains responsible
 // for all HTTP and TLS behavior.
 type commandClient interface {
-	StartRPCServer(addr, model string, port int) (*agent.StatusResult, error)
+	StartRPCServer(addr string, port int) (*agent.StatusResult, error)
 	StopRPCServer(addr string) (*agent.StatusResult, error)
 	GetStatus(addr string) (*agent.StatusResult, error)
 }
 
 // controlNode runs the selected node's interactive command loop. Requests are
-// intentionally limited to the Agent's small command API: model is a local
-// configuration key, never a path, and the Agent independently validates the
-// port and approved model before it starts any process.
+// intentionally limited to the Agent's small command API. The Agent starts
+// only its locally configured ggml-rpc-server; model loading happens later on
+// the Orchestrator-side llama.cpp process.
 func controlNode(stdin *bufio.Scanner, output io.Writer, client commandClient, node *registry.Node, addr string) error {
 	fmt.Fprintf(output, "\nConnected to %s at %s.\n", node.Hostname, addr)
 	for {
@@ -188,18 +188,6 @@ func controlNode(stdin *bufio.Scanner, output io.Writer, client commandClient, n
 }
 
 func startRPCServer(stdin *bufio.Scanner, output io.Writer, client commandClient, node *registry.Node, addr string) error {
-	fmt.Fprint(output, "Approved model name: ")
-	if !stdin.Scan() {
-		if err := stdin.Err(); err != nil {
-			return fmt.Errorf("reading model name: %w", err)
-		}
-		return fmt.Errorf("no model name entered")
-	}
-	model := strings.TrimSpace(stdin.Text())
-	if model == "" {
-		return fmt.Errorf("no model name entered")
-	}
-
 	fmt.Fprintf(output, "RPC port [%d]: ", node.RPCPort)
 	if !stdin.Scan() {
 		if err := stdin.Err(); err != nil {
@@ -212,7 +200,7 @@ func startRPCServer(stdin *bufio.Scanner, output io.Writer, client commandClient
 		return err
 	}
 
-	status, err := client.StartRPCServer(addr, model, port)
+	status, err := client.StartRPCServer(addr, port)
 	if err != nil {
 		return fmt.Errorf("sending start command: %w", err)
 	}

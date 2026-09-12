@@ -42,10 +42,11 @@ func NewClient(tlsConfig *tls.Config) *Client {
 	}
 }
 
-// StartRPCServer requests addr's Agent start rpc-server with the given
-// (Agent-locally-approved) model name and port.
-func (c *Client) StartRPCServer(addr, model string, port int) (*StatusResult, error) {
-	body, err := json.Marshal(startRequest{Model: model, Port: port})
+// StartRPCServer requests addr's Agent start its ggml-rpc-server on port.
+// The remote server exposes accelerator devices; the GGUF model is loaded by
+// the Orchestrator-side llama-cli or llama-server, not by this process.
+func (c *Client) StartRPCServer(addr string, port int) (*StatusResult, error) {
+	body, err := json.Marshal(startRequest{Port: port})
 	if err != nil {
 		return nil, fmt.Errorf("encoding start request: %w", err)
 	}
