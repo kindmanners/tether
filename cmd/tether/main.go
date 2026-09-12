@@ -1,22 +1,21 @@
-// Command tether is the Tether Orchestrator — the main desktop application
-// that discovers nodes, will eventually control Agents on each node, and
-// will host the chat UI once inference routing exists (design doc §3).
-//
-// CURRENT SCOPE: node discovery (design doc §5, step 1) plus an
-// interactive pairing flow (§6.2) for adding a discovered node as a
-// trusted Agent. Agent command/control and the chat UI come later — see
-// cmd/tether-agent for the separate Agent binary.
+// Command tether is the Tether Orchestrator. It discovers allowed Tailnet
+// nodes, pairs with an Agent on first contact, then controls that Agent's
+// local llama.cpp rpc-server through a pinned-mTLS command channel.
 package main
 
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"strings"
 
+	"tether/internal/agent"
 	"tether/internal/certs"
 	"tether/internal/pairing"
 	"tether/internal/registry"
+	"tether/internal/trust"
 )
 
 const allowlistPath = "node_allowlist.yaml"
@@ -29,14 +28,6 @@ const allowlistPath = "node_allowlist.yaml"
 // the Orchestrator's identity persists correctly across restarts
 // regardless of which machine or hostname it happens to run on.
 const orchestratorIdentityName = "orchestrator"
-
-// pairingPort must match cmd/tether-agent's pairingPort — both sides
-// need to agree on which port the Agent's pairing server listens on.
-// Currently hardcoded identically in both binaries rather than shared
-// from one place; worth revisiting (e.g. moving into node_allowlist.yaml
-// per-node, which already has an agent_port field per design doc §4.4)
-// once an Agent's pairing port might ever differ from another's.
-const pairingPort = 7420
 
 func main() {
 	allowlist, err := registry.LoadAllowlist(allowlistPath)
@@ -65,7 +56,7 @@ func main() {
 	}
 
 	fmt.Println()
-	fmt.Print("Pair with which node? Enter a number, or press Enter to skip: ")
+	fmt.Print("Select a node to pair with or control. Enter a number, or press Enter to exit: ")
 
 	stdin := bufio.NewScanner(os.Stdin)
 	if !stdin.Scan() {
@@ -87,34 +78,169 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Enter the pairing code shown on %s's screen: ", node.Hostname)
-	if !stdin.Scan() {
-		return
-	}
-	code := strings.TrimSpace(stdin.Text())
-	if code == "" {
-		fmt.Fprintln(os.Stderr, "no code entered")
-		os.Exit(1)
-	}
-
 	identity, err := certs.LoadOrCreate(orchestratorIdentityName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "loading orchestrator identity: %v\n", err)
 		os.Exit(1)
 	}
 
-	client := pairing.NewClient(identity)
-	addr := fmt.Sprintf("%s:%d", node.TailscaleIP, pairingPort)
-
-	fmt.Printf("Pairing with %s at %s...\n", node.Hostname, addr)
-	result, err := client.Pair(addr, code)
+	addr := fmt.Sprintf("%s:%d", node.TailscaleIP, node.AgentPort)
+	paired, err := isPaired(node.Hostname)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pairing failed: %v\n", err)
-		fmt.Fprintln(os.Stderr, "If the code was mistyped, you can try again while the agent's pairing window is still open.")
+		fmt.Fprintf(os.Stderr, "checking trust for %q: %v\n", node.Hostname, err)
+		fmt.Fprintln(os.Stderr, "Re-pair this Agent to replace its invalid or expired certificate pin.")
 		os.Exit(1)
 	}
+	if !paired {
+		if err := pair(stdin, identity, node, addr); err != nil {
+			fmt.Fprintf(os.Stderr, "pairing failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
+	tlsConfig, err := trust.PinnedTLSConfig(identity.TLSCertificate(), node.Hostname, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "building pinned mTLS configuration for %q: %v\n", node.Hostname, err)
+		os.Exit(1)
+	}
+	if err := controlNode(stdin, os.Stdout, agent.NewClient(tlsConfig), node, addr); err != nil {
+		fmt.Fprintf(os.Stderr, "controlling %q: %v\n", node.Hostname, err)
+		os.Exit(1)
+	}
+}
+
+// isPaired reports whether the Orchestrator has a currently usable pin for
+// hostname. An expired pin is deliberately an error rather than permission to
+// contact a peer whose identity can no longer be verified.
+func isPaired(hostname string) (bool, error) {
+	_, found, err := trust.Get(hostname)
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
+func pair(stdin *bufio.Scanner, identity *certs.Identity, node *registry.Node, addr string) error {
+	fmt.Printf("%s is not paired. Start tether-agent on that machine and enter its pairing code here.\n", node.Hostname)
+	fmt.Printf("Pairing code for %s: ", node.Hostname)
+	if !stdin.Scan() {
+		if err := stdin.Err(); err != nil {
+			return fmt.Errorf("reading pairing code: %w", err)
+		}
+		return fmt.Errorf("no pairing code entered")
+	}
+	code := strings.TrimSpace(stdin.Text())
+	if code == "" {
+		return fmt.Errorf("no pairing code entered")
+	}
+
+	fmt.Printf("Pairing with %s at %s...\n", node.Hostname, addr)
+	result, err := pairing.NewClient(identity).Pair(addr, code)
+	if err != nil {
+		return err
+	}
+	if result.AgentHostname != node.Hostname {
+		return fmt.Errorf("paired Agent identifies as %q, not selected node %q", result.AgentHostname, node.Hostname)
+	}
 	fmt.Printf("Paired successfully with %q.\n", result.AgentHostname)
+	return nil
+}
+
+// commandClient is the subset of agent.Client used by the CLI. Keeping this
+// small interface at the command-loop boundary lets the user-input behavior
+// be tested without a network connection; agent.Client remains responsible
+// for all HTTP and TLS behavior.
+type commandClient interface {
+	StartRPCServer(addr, model string, port int) (*agent.StatusResult, error)
+	StopRPCServer(addr string) (*agent.StatusResult, error)
+	GetStatus(addr string) (*agent.StatusResult, error)
+}
+
+// controlNode runs the selected node's interactive command loop. Requests are
+// intentionally limited to the Agent's small command API: model is a local
+// configuration key, never a path, and the Agent independently validates the
+// port and approved model before it starts any process.
+func controlNode(stdin *bufio.Scanner, output io.Writer, client commandClient, node *registry.Node, addr string) error {
+	fmt.Fprintf(output, "\nConnected to %s at %s.\n", node.Hostname, addr)
+	for {
+		fmt.Fprint(output, "Command [status, start, stop, quit]: ")
+		if !stdin.Scan() {
+			return stdin.Err()
+		}
+
+		switch strings.ToLower(strings.TrimSpace(stdin.Text())) {
+		case "status":
+			status, err := client.GetStatus(addr)
+			printCommandResult(output, status, err)
+		case "start":
+			if err := startRPCServer(stdin, output, client, node, addr); err != nil {
+				fmt.Fprintf(output, "Start failed: %v\n", err)
+			}
+		case "stop":
+			status, err := client.StopRPCServer(addr)
+			printCommandResult(output, status, err)
+		case "quit", "exit", "":
+			return nil
+		default:
+			fmt.Fprintln(output, "Unknown command. Choose status, start, stop, or quit.")
+		}
+	}
+}
+
+func startRPCServer(stdin *bufio.Scanner, output io.Writer, client commandClient, node *registry.Node, addr string) error {
+	fmt.Fprint(output, "Approved model name: ")
+	if !stdin.Scan() {
+		if err := stdin.Err(); err != nil {
+			return fmt.Errorf("reading model name: %w", err)
+		}
+		return fmt.Errorf("no model name entered")
+	}
+	model := strings.TrimSpace(stdin.Text())
+	if model == "" {
+		return fmt.Errorf("no model name entered")
+	}
+
+	fmt.Fprintf(output, "RPC port [%d]: ", node.RPCPort)
+	if !stdin.Scan() {
+		if err := stdin.Err(); err != nil {
+			return fmt.Errorf("reading RPC port: %w", err)
+		}
+		return fmt.Errorf("no RPC port entered")
+	}
+	port, err := parsePort(stdin.Text(), node.RPCPort)
+	if err != nil {
+		return err
+	}
+
+	status, err := client.StartRPCServer(addr, model, port)
+	if err != nil {
+		return fmt.Errorf("sending start command: %w", err)
+	}
+	printCommandResult(output, status, nil)
+	return nil
+}
+
+func parsePort(input string, defaultPort int) (int, error) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return defaultPort, nil
+	}
+	port, err := strconv.Atoi(input)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("RPC port must be a number between 1 and 65535")
+	}
+	return port, nil
+}
+
+func printCommandResult(output io.Writer, status *agent.StatusResult, err error) {
+	if err != nil {
+		fmt.Fprintf(output, "Command failed: %v\n", err)
+		return
+	}
+	fmt.Fprintf(output, "Status: %s\n", status.Status)
+	if status.LastError != "" {
+		fmt.Fprintf(output, "Last error: %s\n", status.LastError)
+	}
 }
 
 // selectNode parses a 1-based index string (as displayed to the user) and

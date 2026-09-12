@@ -1,41 +1,40 @@
 // Command tether-agent is the Tether Agent — a lightweight daemon that
-// runs on every machine contributing GPU to the cluster (design doc §3).
-// It listens for commands from the Orchestrator over mTLS and starts/stops
-// the local llama.cpp rpc-server process. It does not make scheduling
-// decisions on its own.
-//
-// This binary is deliberately separate from cmd/tether (the Orchestrator):
-// they run on different machines and have different responsibilities. See
-// design doc §3 for the full architecture split.
-//
-// CURRENT SCOPE: pairing only. Running this binary starts a single
-// pairing session (design doc §6.2) and exits once it completes or its
-// window expires. There is no long-running daemon mode yet, and no
-// process-control (starting/stopping llama.cpp) yet — those come in a
-// later build step (design doc §5, step 3), once there's something for a
-// persistent Agent to actually manage. Running this repeatedly re-pairs
-// (or re-confirms pairing with) the Orchestrator each time; per design
-// doc §6.1 step 4, re-pairing is the intended way to rotate a node's
-// identity if it's ever needed, not a special separate flow.
+// runs on every machine contributing GPU to the cluster. It pairs with the
+// Orchestrator once, then listens for pinned-mTLS commands to start, stop,
+// and inspect the local llama.cpp rpc-server.
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
+	"tether/internal/agent"
 	"tether/internal/certs"
+	agentconfig "tether/internal/config"
 	"tether/internal/pairing"
+	"tether/internal/process"
 	"tether/internal/registry"
+	"tether/internal/trust"
 )
 
-// pairingPort is the port the Agent's pairing server listens on. Matches
-// the agent_port convention already used in node_allowlist.yaml entries
-// (design doc §4.4) — the same port is reused for pairing now and for
-// the Agent's general command API later, rather than introducing a
-// second port just for the pairing phase.
-const pairingPort = 7420
+// agentPort is shared by the short-lived pairing server and the persistent
+// command server. Pairing releases the listener before the command server is
+// started, so there is never more than one protocol listening on this port.
+const agentPort = 7420
+
+// orchestratorIdentityName must match cmd/tether's identity name. Pairing
+// pins that certificate under this name, which makes it both the marker that
+// pairing has completed and the exact peer expected by the command server.
+const orchestratorIdentityName = "orchestrator"
 
 func main() {
+	forcePairing := flag.Bool("pair", false, "open a new pairing window before serving commands")
+	flag.Parse()
+
 	hostname, err := registry.SelfHostname()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tether-agent: could not determine this machine's Tailscale hostname: %v\n", err)
@@ -43,21 +42,55 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Identity is keyed by the Tailscale hostname (not os.Hostname()) so
-	// this Agent's identity name always matches what the Orchestrator's
-	// registry calls the same machine — see registry.SelfHostname's doc
-	// comment for why that consistency matters (a real bug we found:
-	// Windows machine names can differ from Tailscale-derived names).
+	// Identity is keyed by the Tailscale hostname so its certificate name
+	// always matches the name the Orchestrator uses for this same machine.
 	identity, err := certs.LoadOrCreate(hostname)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tether-agent: could not load or create identity for %q: %v\n", hostname, err)
 		os.Exit(1)
 	}
 
+	paired := false
+	if !*forcePairing {
+		paired, err = isPaired()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "tether-agent: could not use existing pairing: %v\n", err)
+			fmt.Fprintln(os.Stderr, "tether-agent: run with -pair to replace the existing pin.")
+			os.Exit(1)
+		}
+	}
+	if !paired || *forcePairing {
+		if err := pair(identity, hostname); err != nil {
+			fmt.Fprintf(os.Stderr, "tether-agent: pairing did not complete: %v\n", err)
+			fmt.Fprintln(os.Stderr, "tether-agent: run tether-agent again to try once more.")
+			os.Exit(1)
+		}
+		fmt.Println()
+		fmt.Println("  Pairing succeeded. Starting the command server.")
+	}
+
+	if err := serve(identity, hostname); err != nil {
+		fmt.Fprintf(os.Stderr, "tether-agent: command server stopped: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// isPaired reports whether this Agent has a usable pin for its one expected
+// Orchestrator. trust.Get also checks certificate validity, so an expired pin
+// is not treated as an established pairing that could start a dead command
+// channel.
+func isPaired() (bool, error) {
+	_, found, err := trust.Get(orchestratorIdentityName)
+	if err != nil {
+		return false, err
+	}
+	return found, nil
+}
+
+func pair(identity *certs.Identity, hostname string) error {
 	server, err := pairing.NewServer(identity, pairing.Window)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "tether-agent: could not start pairing session: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("starting pairing session: %w", err)
 	}
 
 	fmt.Println()
@@ -73,14 +106,40 @@ func main() {
 	fmt.Println("  This code is single-use and shown only here — it is never logged.")
 	fmt.Println()
 
-	addr := fmt.Sprintf(":%d", pairingPort)
-	if err := server.Start(addr); err != nil {
-		fmt.Println()
-		fmt.Printf("  Pairing did not complete: %v\n", err)
-		fmt.Println("  Run tether-agent again to try once more.")
-		os.Exit(1)
+	return server.Start(fmt.Sprintf(":%d", agentPort))
+}
+
+func serve(identity *certs.Identity, hostname string) error {
+	configPath, err := agentconfig.DefaultPath()
+	if err != nil {
+		return fmt.Errorf("locating agent config: %w", err)
+	}
+	cfg, err := agentconfig.Load(configPath)
+	if err != nil {
+		return err
 	}
 
-	fmt.Println()
-	fmt.Println("  Pairing succeeded. The Orchestrator can now reach this node.")
+	tlsConfig, err := trust.PinnedTLSConfig(
+		identity.TLSCertificate(),
+		orchestratorIdentityName,
+		true,
+	)
+	if err != nil {
+		return fmt.Errorf("building pinned mTLS configuration: %w", err)
+	}
+
+	manager := process.NewManager()
+	server := agent.NewServer(cfg, manager)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	addr := fmt.Sprintf(":%d", agentPort)
+	fmt.Printf("Tether Agent — %s\n", hostname)
+	fmt.Printf("Command server listening on %s; press Ctrl-C to stop.\n", addr)
+
+	err = server.Start(ctx, addr, tlsConfig)
+	if stopErr := manager.StopDefault(); stopErr != nil {
+		return fmt.Errorf("stopping managed rpc-server: %w", stopErr)
+	}
+	return err
 }
