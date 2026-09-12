@@ -12,6 +12,7 @@ package process
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -89,6 +90,12 @@ func (m *Manager) Start(params StartParams) error {
 		"--host", params.Host,
 		"--port", fmt.Sprintf("%d", params.Port),
 	)
+	// ggml-rpc-server reports device discovery, bind failures, and backend
+	// initialization details on its standard streams. Forward them through the
+	// Agent so an operator can diagnose a real hardware launch; leaving these
+	// nil would discard them on the platform null device.
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting rpc-server: %w", err)
