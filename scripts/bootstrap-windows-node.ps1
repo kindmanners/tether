@@ -15,7 +15,7 @@ param(
     [switch]$InstallMissing,
     [switch]$ReplaceAgentConfig,
     [switch]$SkipRPCBuild,
-    [string]$TetherRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$TetherRoot,
     [string]$LlamaCppPath,
     [int]$AgentPort = 7420,
     [int]$RPCPort = 50053,
@@ -28,6 +28,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:missingRequirements = [System.Collections.Generic.List[string]]::new()
 $script:installationOccurred = $false
+
+if ([string]::IsNullOrWhiteSpace($TetherRoot)) {
+    $TetherRoot = Split-Path -Parent $PSScriptRoot
+}
 
 function Write-Step {
     param([string]$Message)
