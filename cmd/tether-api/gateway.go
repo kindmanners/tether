@@ -21,16 +21,18 @@ import (
 )
 
 type gatewayConfig struct {
-	modelsDir       string
-	llamaServer     string
-	rpcMode         string
-	allowlistPath   string
-	apiKey          string
-	ctxSize         int
-	parallel        int
-	idleTimeout     time.Duration
-	modelOverhead   float64
-	kvBytesPerToken int64
+	modelsDir          string
+	llamaServer        string
+	rpcMode            string
+	allowlistPath      string
+	apiKey             string
+	ctxSize            int
+	parallel           int
+	idleTimeout        time.Duration
+	workerStartTimeout time.Duration
+	localGPU           bool
+	modelOverhead      float64
+	kvBytesPerToken    int64
 }
 
 type modelWorker struct {
@@ -298,7 +300,7 @@ func (g *gateway) launch(modelID, modelPath string, plan placement.Plan) (*model
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting model worker: %w", err)
 	}
-	if err := waitForWorker(address, cmd, 45*time.Second); err != nil {
+	if err := waitForWorker(address, cmd, g.cfg.workerStartTimeout); err != nil {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
 		return nil, err

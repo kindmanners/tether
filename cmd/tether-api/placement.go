@@ -30,7 +30,7 @@ func (g *gateway) planFor(modelPath string) (placement.Plan, error) {
 	case "", "none":
 		return placement.Plan{Mode: "local", Nodes: []placement.Node{{Hostname: "orchestrator", Local: true}}, Requirement: requirement}, nil
 	case "auto":
-		nodes, err := discoverPlacementNodes(g.cfg.allowlistPath)
+		nodes, err := discoverPlacementNodes(g.cfg.allowlistPath, g.cfg.localGPU)
 		if err != nil {
 			return placement.Plan{}, err
 		}
@@ -48,7 +48,7 @@ func (g *gateway) planFor(modelPath string) (placement.Plan, error) {
 	}
 }
 
-func discoverPlacementNodes(allowlistPath string) ([]placement.Node, error) {
+func discoverPlacementNodes(allowlistPath string, localGPU bool) ([]placement.Node, error) {
 	allowlist, err := registry.LoadAllowlist(allowlistPath)
 	if err != nil {
 		return nil, err
@@ -67,6 +67,9 @@ func discoverPlacementNodes(allowlistPath string) ([]placement.Node, error) {
 	result := make([]placement.Node, 0, len(regNodes))
 	for _, node := range regNodes {
 		if selfErr == nil && node.Hostname == self {
+			if !localGPU {
+				continue
+			}
 			gpus, err := localPlacementGPUs()
 			if err != nil {
 				continue

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -33,15 +35,21 @@ func main() {
 		defaultModelsDir = filepath.Join(home, "models")
 	}
 
+	defaultLlamaServer := "llama.cpp/build-rpc/bin/llama-server"
+	cudaLlamaServer := "llama.cpp/build-rpc-cuda/bin/llama-server"
+	if info, err := os.Stat(cudaLlamaServer); err == nil && !info.IsDir() {
+		defaultLlamaServer = cudaLlamaServer
+	}
 	listen := flag.String("listen", "127.0.0.1:11435", "OpenAI API address (host:port)")
 	modelsDir := flag.String("models-dir", defaultModelsDir, "directory containing GGUF models")
-	llamaServer := flag.String("llama-server", "llama.cpp/build-rpc/bin/llama-server", "path to llama.cpp llama-server")
+	llamaServer := flag.String("llama-server", defaultLlamaServer, "path to llama.cpp llama-server")
 	rpc := flag.String("rpc", "auto", "comma-separated RPC endpoints, auto, or none")
 	allowlistPath := flag.String("allowlist", "node_allowlist.yaml", "path to Tether node allowlist for --rpc auto")
 	apiKey := flag.String("api-key", "", "API key required by non-local clients")
 	ctxSize := flag.Int("ctx-size", 8192, "context size per loaded model")
 	parallel := flag.Int("parallel", 2, "parallel requests per loaded model")
 	idleUnload := flag.Duration("idle-unload", 5*time.Minute, "unload an idle model worker after this duration; 0 disables idle unload")
+	workerStartTimeout := flag.Duration("worker-start-timeout", 5*time.Minute, "maximum time to wait for a model worker to load and become healthy")
 	modelOverhead := flag.Float64("model-overhead", 1.15, "multiply GGUF file size by this runtime memory reserve")
 	kvBytesPerToken := flag.Int64("kv-cache-bytes-per-token", 256*1024, "conservative KV-cache VRAM reserve per context token")
 	flag.Parse()
@@ -53,8 +61,8 @@ func main() {
 	if !isLoopbackHost(host) && *apiKey == "" {
 		log.Fatal("-api-key is required when -listen is reachable beyond this machine")
 	}
-	if *ctxSize < 1 || *parallel < 1 || *idleUnload < 0 || *modelOverhead < 1 || *kvBytesPerToken < 0 {
-		log.Fatal("-ctx-size and -parallel must be positive; -idle-unload and -kv-cache-bytes-per-token cannot be negative; -model-overhead must be at least 1")
+	if *ctxSize < 1 || *parallel < 1 || *idleUnload < 0 || *workerStartTimeout <= 0 || *modelOverhead < 1 || *kvBytesPerToken < 0 {
+		log.Fatal("-ctx-size, -parallel, and -worker-start-timeout must be positive; -idle-unload and -kv-cache-bytes-per-token cannot be negative; -model-overhead must be at least 1")
 	}
 	if info, err := os.Stat(*modelsDir); err != nil || !info.IsDir() {
 		log.Fatalf("model directory %q is unavailable: %v", *modelsDir, err)
@@ -62,10 +70,14 @@ func main() {
 	if info, err := os.Stat(*llamaServer); err != nil || info.IsDir() {
 		log.Fatalf("llama-server at %q is unavailable: %v", *llamaServer, err)
 	}
+	localGPU, err := llamaServerHasCUDA(*llamaServer)
+	if err != nil {
+		log.Fatalf("checking local llama-server CUDA backend: %v", err)
+	}
 
 	gateway, err := newGateway(gatewayConfig{
 		modelsDir: *modelsDir, llamaServer: *llamaServer, rpcMode: *rpc, allowlistPath: *allowlistPath,
-		apiKey: *apiKey, ctxSize: *ctxSize, parallel: *parallel, idleTimeout: *idleUnload,
+		apiKey: *apiKey, ctxSize: *ctxSize, parallel: *parallel, idleTimeout: *idleUnload, workerStartTimeout: *workerStartTimeout, localGPU: localGPU,
 		modelOverhead: *modelOverhead, kvBytesPerToken: *kvBytesPerToken,
 	})
 	if err != nil {
@@ -84,6 +96,9 @@ func main() {
 	if strings.EqualFold(*rpc, "auto") {
 		log.Printf("RPC placement: whole-model GPU when it fits; RPC mesh only when required")
 	}
+	if !localGPU {
+		log.Printf("Local GPU placement disabled: %s does not expose a CUDA backend", *llamaServer)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -96,6 +111,19 @@ func main() {
 		_ = server.Shutdown(shutdownCtx)
 		gateway.shutdown(shutdownCtx)
 	}
+}
+
+func llamaServerHasCUDA(path string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, path, "--list-devices").CombinedOutput()
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("timed out running --list-devices")
+	}
+	if err != nil {
+		return false, fmt.Errorf("running --list-devices: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return bytes.Contains(bytes.ToLower(output), []byte("cuda")), nil
 }
 
 // resolveRPCEndpoints handles a manual list, an intentionally local-only
