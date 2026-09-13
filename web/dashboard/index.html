@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#ffffff">
+    <title>Tether — Cluster</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="index-rail" aria-label="Cluster index">
+        <a class="wordmark" href="#top" aria-label="Tether cluster overview">TETHER</a>
+        <p class="rail-label">CLUSTER</p>
+        <p class="cluster-index" aria-hidden="true">01</p>
+        <p class="rail-note">Distributed local inference</p>
+      </aside>
+
+      <section class="content" id="top">
+        <header class="masthead">
+          <div>
+            <p class="eyebrow">Orchestrator overview</p>
+            <h1>Cluster<br>status</h1>
+          </div>
+          <div class="refresh-area">
+            <p id="last-updated" class="last-updated">Loading cluster data</p>
+            <button id="refresh" type="button">Refresh</button>
+          </div>
+        </header>
+
+        <section class="summary-grid" aria-label="Cluster summary">
+          <article class="summary-cell">
+            <p class="metric-label">Nodes</p>
+            <p id="node-count" class="metric-value">—</p>
+            <p id="node-summary" class="metric-detail">Loading</p>
+          </article>
+          <article class="summary-cell">
+            <p class="metric-label">Total VRAM</p>
+            <p id="vram-total" class="metric-value">—</p>
+            <p id="vram-summary" class="metric-detail">Loading</p>
+          </article>
+          <article class="summary-cell">
+            <p class="metric-label">Models</p>
+            <p id="model-count" class="metric-value">—</p>
+            <p id="model-summary" class="metric-detail">Loading</p>
+          </article>
+        </section>
+
+        <section class="panel nodes-panel" aria-labelledby="nodes-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Tailnet nodes</p>
+              <h2 id="nodes-heading">Compute contributors</h2>
+            </div>
+            <p id="node-source" class="source-note"></p>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Node</th>
+                  <th scope="col">GPU</th>
+                  <th scope="col">VRAM</th>
+                  <th scope="col">RPC endpoint</th>
+                  <th scope="col">Agent</th>
+                </tr>
+              </thead>
+              <tbody id="nodes-body"></tbody>
+            </table>
+          </div>
+          <p id="node-empty" class="empty-state" hidden>No Tether nodes are available in this view.</p>
+        </section>
+
+        <section class="panel models-panel" aria-labelledby="models-heading">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Orchestrator library</p>
+              <h2 id="models-heading">Available models</h2>
+            </div>
+            <p id="model-source" class="source-note"></p>
+          </div>
+          <div id="models-list" class="models-list"></div>
+          <p id="model-empty" class="empty-state" hidden>No GGUF models were reported by the orchestrator.</p>
+        </section>
+
+        <footer class="footer-note">
+          <p>Node control stays on the pinned-mTLS Tether Agent channel. Model execution is provided by llama.cpp RPC.</p>
+        </footer>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

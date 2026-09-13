@@ -69,6 +69,35 @@ func (c *Client) GetStatus(addr string) (*StatusResult, error) {
 	return decodeStatus(resp)
 }
 
+// GetCapabilities queries the local GPU report recorded during Tether's
+// machine bootstrap. It is read-only and travels over the same pinned-mTLS
+// connection as status/start/stop commands.
+func (c *Client) GetCapabilities(addr string) (*CapabilitiesResult, error) {
+	resp, err := c.httpClient.Get("https://" + addr + "/capabilities")
+	if err != nil {
+		return nil, fmt.Errorf("contacting agent at %s: %w", addr, err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading agent response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		var errResp errorResponse
+		if jsonErr := json.Unmarshal(bodyBytes, &errResp); jsonErr == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("agent returned %d: %s", resp.StatusCode, errResp.Error)
+		}
+		return nil, fmt.Errorf("agent returned unexpected status %d", resp.StatusCode)
+	}
+
+	var result CapabilitiesResult
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("decoding capability response: %w", err)
+	}
+	return &result, nil
+}
+
 func (c *Client) post(addr, path string, body []byte) (*StatusResult, error) {
 	var reader io.Reader
 	if body != nil {

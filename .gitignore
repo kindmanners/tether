@@ -1,3 +1,4 @@
-docs
+docs/*
+!docs/windows-gpu-node-bootstrap.md
 bin
 llama.cpp

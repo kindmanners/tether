@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"tether/internal/config"
@@ -39,6 +41,26 @@ type statusResponse struct {
 
 type errorResponse struct {
 	Error string `json:"error"`
+}
+
+// GPUCapability is the GPU information an Agent records locally during
+// bootstrap. It is served only through the already-pinned mTLS channel; the
+// public tailnet never receives this report.
+type GPUCapability struct {
+	Name          string `json:"name"`
+	DriverVersion string `json:"driverVersion"`
+	VRAMBytes     int64  `json:"vramBytes"`
+	VRAMFreeBytes int64  `json:"vramFreeBytes,omitempty"`
+}
+
+// CapabilitiesResult is the small, machine-observed report used by the
+// Orchestrator dashboard. The Agent does not invent values here: the Windows
+// bootstrapper writes the report from the local operating system.
+type CapabilitiesResult struct {
+	ObservedAt string          `json:"observedAt"`
+	Hostname   string          `json:"hostname"`
+	CUDA       string          `json:"cudaVersion"`
+	GPUs       []GPUCapability `json:"gpus"`
 }
 
 // Server is the Agent's ongoing mTLS command server. Unlike
@@ -80,6 +102,7 @@ func (s *Server) Start(ctx context.Context, addr string, tlsConfig *tls.Config) 
 	mux.HandleFunc("/start", s.handleStart)
 	mux.HandleFunc("/stop", s.handleStop)
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/capabilities", s.handleCapabilities)
 
 	httpServer := &http.Server{
 		Addr:      addr,
@@ -159,6 +182,41 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeStatus(w, s.manager)
+}
+
+// handleCapabilities returns the local bootstrap report, if one exists. A
+// missing report is deliberately visible as 404 instead of a zero-value GPU:
+// callers must distinguish "the node reports no VRAM" from "this node has not
+// been bootstrapped yet."
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "only GET is supported")
+		return
+	}
+
+	dir, err := agentconfig.DefaultDirectory()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "locating Agent state: "+err.Error())
+		return
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "bootstrap-report.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, "no bootstrap capability report is available on this node")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "reading bootstrap capability report: "+err.Error())
+		return
+	}
+
+	var report CapabilitiesResult
+	if err := json.Unmarshal(data, &report); err != nil {
+		writeError(w, http.StatusInternalServerError, "parsing bootstrap capability report: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(report)
 }
 
 func writeStatus(w http.ResponseWriter, m *process.Manager) {

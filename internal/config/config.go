@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DefaultPath returns the standard location for an Agent's local config:
+// DefaultDirectory returns the standard directory for an Agent's local state:
 // the same platform-specific config directory internal/certs and
 // internal/trust already use (%AppData%\tether on Windows,
 // ~/.config/tether on Linux), NOT relative to the working directory like
@@ -22,12 +22,21 @@ import (
 // differ from Mathesis's — so it belongs alongside that machine's own
 // identity and trust store, not checked into git or assumed to be copied
 // between machines the way the shared node_allowlist.yaml is.
-func DefaultPath() (string, error) {
+func DefaultDirectory() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("locating user config dir: %w", err)
+		return "", fmt.Errorf("locating user config directory: %w", err)
 	}
-	return filepath.Join(base, "tether", "agent_config.yaml"), nil
+	return filepath.Join(base, "tether"), nil
+}
+
+// DefaultPath returns the standard location for an Agent's local config.
+func DefaultPath() (string, error) {
+	dir, err := DefaultDirectory()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "agent_config.yaml"), nil
 }
 
 // Config is an Agent's local configuration, loaded once at startup from
