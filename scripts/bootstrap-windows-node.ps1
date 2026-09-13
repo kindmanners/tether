@@ -165,7 +165,7 @@ function Assert-PortIsFree {
         return
     }
     $description = ($owners | ForEach-Object { "$($_.Process) (PID $($_.PID), $($_.Address))" }) -join ', '
-    throw "TCP $Port is already listening and cannot be used for $Purpose: $description"
+    throw "TCP $Port is already listening and cannot be used for ${Purpose}: $description"
 }
 
 function Ensure-FirewallRule {
