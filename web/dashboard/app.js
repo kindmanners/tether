@@ -27,6 +27,35 @@ const fallbackDashboard = {
 const byteUnit = 1024 ** 3;
 const byId = (id) => document.getElementById(id);
 
+function stateClass(status) {
+  const normalized = String(status || "unknown").toLowerCase();
+  if (normalized === "online" || normalized === "verified") return "state--online";
+  if (normalized === "offline" || normalized === "agentunreachable") return "state--offline";
+  return "state--unknown";
+}
+
+function modelStateClass(state) {
+  const value = String(state || "unloaded").toLowerCase();
+  return ["unloaded", "loading", "loaded", "idle-countdown", "unloading"].includes(value) ? value : "unknown";
+}
+
+function setTheme(theme) {
+  const isDark = theme === "dark";
+  document.documentElement.dataset.theme = theme;
+  document.querySelector('meta[name="theme-color"]').content = isDark ? "#000000" : "#ffffff";
+  const toggle = byId("theme-toggle");
+  toggle.textContent = isDark ? "Light mode" : "Dark mode";
+  toggle.setAttribute("aria-pressed", String(isDark));
+  toggle.setAttribute("aria-label", `Switch to ${isDark ? "light" : "dark"} mode`);
+  localStorage.setItem("tether-theme", theme);
+}
+
+function initializeTheme() {
+  const savedTheme = localStorage.getItem("tether-theme");
+  const systemPrefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  setTheme(savedTheme || (systemPrefersDark ? "dark" : "light"));
+}
+
 function gibibytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "Not reported";
   const value = bytes / byteUnit;
@@ -53,11 +82,12 @@ function renderNodes(nodes) {
 
   for (const node of nodes) {
     const row = document.createElement("tr");
+    const status = String(node.status || "unknown");
     const endpoint = node.tailscaleIP && node.rpcPort ? `${node.tailscaleIP}:${node.rpcPort}` : "Not reported";
     const agentPort = node.agentPort ? `TCP ${node.agentPort}` : "Port not reported";
     const agent = node.agentStatus || agentPort;
     row.innerHTML = `
-      <td>${escapeText(node.hostname)}<span class="node-detail"><span class="state">${escapeText(node.status || "unknown")}</span></span></td>
+      <td>${escapeText(node.hostname)}<span class="node-detail"><span class="state ${stateClass(status)}">${escapeText(status)}</span></span></td>
       <td>${escapeText(node.gpuModel || "Not reported")}<span class="node-detail">${escapeText(node.note || "")}</span></td>
       <td>${gibibytes(node.vramTotalBytes)}<span class="node-detail">${node.vramFreeBytes ? `${gibibytes(node.vramFreeBytes)} free` : "Free VRAM not reported"}</span></td>
       <td>${escapeText(endpoint)}</td>
@@ -75,10 +105,20 @@ function renderModels(models) {
   for (const model of models) {
     const row = document.createElement("article");
     row.className = "model-row";
+    const states = Array.isArray(model.states) ? model.states : [];
+    const lifecycle = states.length
+      ? states.map((state) => {
+          const nodes = Array.isArray(state.nodes) && state.nodes.length ? state.nodes.join(", ") : "Not placed";
+          const countdown = state.idleUntil ? ` · unloads ${new Date(state.idleUntil).toLocaleTimeString()}` : "";
+          const label = String(state.state || "unloaded");
+          return `<p class="model-state model-state--${modelStateClass(label)}">${escapeText(label)}<span>${escapeText(nodes + countdown)}</span></p>`;
+        }).join("")
+      : '<p class="model-state model-state--unknown">Not reported<span>Start tether-api to report worker state</span></p>';
     row.innerHTML = `
       <p class="model-name">${escapeText(model.name)}</p>
       <p class="model-path">${escapeText(model.path || "Path not reported")}</p>
-      <p class="model-note">${escapeText([model.format, model.note].filter(Boolean).join(" · "))}</p>`;
+      <p class="model-note">${escapeText([model.format, model.note].filter(Boolean).join(" · "))}</p>
+      <div class="model-states" aria-label="Model lifecycle">${lifecycle}</div>`;
     list.append(row);
   }
 }
@@ -124,4 +164,9 @@ async function refresh() {
 }
 
 byId("refresh").addEventListener("click", refresh);
+byId("theme-toggle").addEventListener("click", () => {
+  const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  setTheme(nextTheme);
+});
+initializeTheme();
 refresh();

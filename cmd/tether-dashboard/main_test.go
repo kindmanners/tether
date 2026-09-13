@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,6 +29,24 @@ func TestScanGGUFModels(t *testing.T) {
 	}
 	if models[0].Path != "~/models/nested/two.GGUF" || models[1].Path != "~/models/one.gguf" {
 		t.Fatalf("unexpected models: %#v", models)
+	}
+}
+
+func TestFetchModelStates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/model-states" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"models":[{"model":"one","state":"idle-countdown","nodes":["mathesis"]}]}`))
+	}))
+	defer server.Close()
+	states, err := fetchModelStates(server.URL + "/api/v1/model-states")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, ok := states["one"]
+	if !ok || state.State != "idle-countdown" || len(state.Nodes) != 1 || state.Nodes[0] != "mathesis" {
+		t.Fatalf("unexpected model states: %#v", states)
 	}
 }
 

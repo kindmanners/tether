@@ -40,10 +40,22 @@ type dashboardNode struct {
 }
 
 type dashboardModel struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Format string `json:"format"`
-	Note   string `json:"note,omitempty"`
+	Name   string                `json:"name"`
+	Path   string                `json:"path"`
+	Format string                `json:"format"`
+	Note   string                `json:"note,omitempty"`
+	States []dashboardModelState `json:"states,omitempty"`
+}
+
+// dashboardModelState is supplied by the Orchestrator-owned API gateway. The
+// dashboard never guesses worker state from a GPU report: an unloaded model
+// and an idle-loaded model are materially different for the next request.
+type dashboardModelState struct {
+	State     string   `json:"state"`
+	Nodes     []string `json:"nodes,omitempty"`
+	UpdatedAt string   `json:"updatedAt,omitempty"`
+	IdleUntil string   `json:"idleUntil,omitempty"`
+	Detail    string   `json:"detail,omitempty"`
 }
 
 type dashboardResponse struct {
@@ -57,6 +69,7 @@ type dashboardResponse struct {
 type dashboardServer struct {
 	allowlistPath string
 	modelsDir     string
+	modelStateURL string
 }
 
 func main() {
@@ -69,13 +82,14 @@ func main() {
 	allowlistPath := flag.String("allowlist", "node_allowlist.yaml", "path to Tether node allowlist")
 	modelsDir := flag.String("models-dir", defaultModelsDir, "directory containing orchestrator GGUF models")
 	staticDir := flag.String("static-dir", "web/dashboard", "directory containing dashboard HTML assets")
+	modelStateURL := flag.String("model-state-url", "http://127.0.0.1:11435/api/v1/model-states", "Tether API model-state endpoint; empty disables live model states")
 	flag.Parse()
 
 	if info, err := os.Stat(*staticDir); err != nil || !info.IsDir() {
 		log.Fatalf("dashboard assets at %q are unavailable: %v", *staticDir, err)
 	}
 
-	server := &dashboardServer{allowlistPath: *allowlistPath, modelsDir: *modelsDir}
+	server := &dashboardServer{allowlistPath: *allowlistPath, modelsDir: *modelsDir, modelStateURL: *modelStateURL}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/dashboard", server.handleDashboard)
 	mux.Handle("/", http.FileServer(http.Dir(*staticDir)))
@@ -134,6 +148,13 @@ func (s *dashboardServer) collect() (*dashboardResponse, error) {
 	if err != nil {
 		return nil, err
 	}
+	if states, err := fetchModelStates(s.modelStateURL); err == nil {
+		for i := range models {
+			if state, ok := states[models[i].Name]; ok {
+				models[i].States = []dashboardModelState{state}
+			}
+		}
+	}
 
 	return &dashboardResponse{
 		ObservedAt:  time.Now().UTC().Format(time.RFC3339),
@@ -142,6 +163,35 @@ func (s *dashboardServer) collect() (*dashboardResponse, error) {
 		Nodes:       result,
 		Models:      models,
 	}, nil
+}
+
+func fetchModelStates(url string) (map[string]dashboardModelState, error) {
+	if strings.TrimSpace(url) == "" {
+		return nil, nil
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("model-state endpoint returned %d", response.StatusCode)
+	}
+	var payload struct {
+		Models []struct {
+			Model string `json:"model"`
+			dashboardModelState
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	states := make(map[string]dashboardModelState, len(payload.Models))
+	for _, model := range payload.Models {
+		states[model.Model] = model.dashboardModelState
+	}
+	return states, nil
 }
 
 // dashboardNodeFromLocalHost lets the Orchestrator show its own NVIDIA GPUs

@@ -5,11 +5,21 @@
   --quiet: #626262;
   --line: #d5d5d7;
   --signal: #e4002b;
-  --error: #e4002b;
+  --online: #008c4a;
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   color: var(--ink);
   background: var(--paper);
   font-synthesis: none;
+}
+
+:root[data-theme="dark"] {
+  --paper: #000000;
+  --canvas: #0b0c0a;
+  --ink: #ffffff;
+  --quiet: #b3b3b3;
+  --line: #555555;
+  --signal: #ff3b30;
+  --online: #00e676;
 }
 
 * { box-sizing: border-box; }
@@ -103,6 +113,7 @@ button:hover, button:focus-visible {
   justify-content: space-between;
   min-height: 17rem;
   padding: 1.5rem clamp(1.25rem, 4vw, 4.5rem) 2rem;
+  position: relative;
 }
 
 .eyebrow { color: var(--signal); }
@@ -125,8 +136,14 @@ h2 {
   margin: 0.38rem 0 0;
 }
 
-.refresh-area { text-align: right; }
+.refresh-area {
+  position: absolute;
+  right: clamp(1.25rem, 4vw, 4.5rem);
+  text-align: right;
+  top: 1.5rem;
+}
 .last-updated { color: var(--quiet); font-size: 0.72rem; margin-bottom: 0.7rem; }
+.header-actions { display: flex; gap: 0.55rem; justify-content: end; }
 
 .summary-grid {
   border-bottom: 1px solid var(--ink);
@@ -177,12 +194,29 @@ td {
 td:first-child { font-weight: 700; }
 
 .node-detail { color: var(--quiet); display: block; font-size: 0.72rem; margin-top: 0.28rem; }
-.state { color: var(--signal); font-size: 0.67rem; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; }
+.state {
+  color: var(--quiet);
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.state::before {
+  background: currentColor;
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 0.5rem;
+  margin: 0 0.42rem 0.02rem 0;
+  width: 0.5rem;
+}
+.state--online { color: var(--online); }
+.state--offline { color: var(--signal); }
 
 .models-list { border-top: 1px solid var(--ink); }
 .model-row {
   display: grid;
-  grid-template-columns: minmax(10rem, 0.82fr) minmax(14rem, 1.7fr) minmax(8rem, 0.65fr);
+  grid-template-columns: minmax(10rem, 0.82fr) minmax(14rem, 1.5fr) minmax(6rem, 0.42fr) minmax(10rem, 0.85fr);
   gap: 1rem;
   padding: 1.1rem 0;
 }
@@ -190,6 +224,29 @@ td:first-child { font-weight: 700; }
 .model-name { font-size: 1.12rem; font-weight: 700; letter-spacing: -0.03em; margin: 0; }
 .model-path, .model-note { color: var(--quiet); font-size: 0.78rem; line-height: 1.35; margin: 0; overflow-wrap: anywhere; }
 .model-note { text-align: right; }
+.model-states { min-width: 0; }
+.model-state {
+  color: var(--quiet);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  line-height: 1.25;
+  margin: 0;
+  text-transform: uppercase;
+}
+.model-state::before {
+  background: currentColor;
+  border-radius: 50%;
+  content: "";
+  display: inline-block;
+  height: 0.45rem;
+  margin: 0 0.35rem 0.02rem 0;
+  width: 0.45rem;
+}
+.model-state span { display: block; font-size: 0.7rem; font-weight: 400; letter-spacing: 0; margin: 0.32rem 0 0 0.8rem; text-transform: none; }
+.model-state--loaded { color: var(--online); }
+.model-state--loading, .model-state--idle-countdown { color: var(--signal); }
+.model-state--unloading { color: var(--quiet); }
 
 .empty-state { border-top: 1px solid var(--ink); color: var(--quiet); font-size: 0.86rem; margin: 0; padding: 1.2rem 0; }
 .footer-note { border-top: 1px solid var(--ink); padding: 1.15rem clamp(1.25rem, 4vw, 4.5rem); }
@@ -200,8 +257,9 @@ td:first-child { font-weight: 700; }
   .index-rail { border-bottom: 1px solid var(--ink); border-right: 0; min-height: auto; padding: 1rem 1.25rem; }
   .rail-label, .rail-note { display: none; }
   .cluster-index { font-size: 2.9rem; line-height: 0.7; margin: 0.5rem 0 0 -0.18rem; }
-  .masthead { align-items: start; flex-direction: column; gap: 2rem; min-height: 0; padding-bottom: 1.5rem; }
-  .refresh-area { text-align: left; }
+  .masthead { align-items: start; flex-direction: column; gap: 5.25rem; min-height: 0; padding-bottom: 1.5rem; }
+  .refresh-area { left: 1.25rem; right: auto; text-align: left; top: 1rem; }
+  .header-actions { justify-content: start; }
   .summary-grid { grid-template-columns: 1fr; }
   .summary-cell { min-height: 0; padding-bottom: 1.4rem; }
   .summary-cell + .summary-cell { border-left: 0; border-top: 1px solid var(--ink); }

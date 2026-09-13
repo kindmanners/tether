@@ -17,7 +17,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"tether/internal/config"
@@ -220,8 +223,41 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "parsing bootstrap capability report: "+err.Error())
 		return
 	}
+	// Bootstrap proves the hardware/toolchain exists. Placement needs current
+	// free VRAM, so refresh from the NVIDIA driver at request time whenever the
+	// management tool is available. Keep the bootstrapped report on failure:
+	// availability of telemetry must not make a paired Agent unusable.
+	if gpus, err := liveNvidiaGPUs(); err == nil && len(gpus) > 0 {
+		report.GPUs = gpus
+		report.ObservedAt = time.Now().UTC().Format(time.RFC3339)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(report)
+}
+
+func liveNvidiaGPUs() ([]GPUCapability, error) {
+	output, err := exec.Command("nvidia-smi", "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return nil, fmt.Errorf("running nvidia-smi: %w", err)
+	}
+	lines := strings.FieldsFunc(string(output), func(r rune) bool { return r == '\n' || r == '\r' })
+	gpus := make([]GPUCapability, 0, len(lines))
+	for _, line := range lines {
+		fields := strings.Split(line, ",")
+		if len(fields) != 4 {
+			return nil, fmt.Errorf("unexpected nvidia-smi row %q", line)
+		}
+		totalMiB, err := strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parsing total VRAM: %w", err)
+		}
+		freeMiB, err := strconv.ParseInt(strings.TrimSpace(fields[2]), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parsing free VRAM: %w", err)
+		}
+		gpus = append(gpus, GPUCapability{Name: strings.TrimSpace(fields[0]), DriverVersion: strings.TrimSpace(fields[3]), VRAMBytes: totalMiB * 1024 * 1024, VRAMFreeBytes: freeMiB * 1024 * 1024})
+	}
+	return gpus, nil
 }
 
 func writeStatus(w http.ResponseWriter, m *process.Manager) {
