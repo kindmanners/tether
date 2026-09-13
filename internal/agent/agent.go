@@ -9,6 +9,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -210,6 +211,10 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Windows PowerShell 5.1's UTF8 writer prepends a UTF-8 BOM. JSON itself
+	// does not permit that marker, but accepting it here makes an existing
+	// bootstrap report usable while the bootstrapper migrates to BOM-free UTF-8.
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
 	var report CapabilitiesResult
 	if err := json.Unmarshal(data, &report); err != nil {
 		writeError(w, http.StatusInternalServerError, "parsing bootstrap capability report: "+err.Error())

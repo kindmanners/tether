@@ -288,7 +288,8 @@ function Write-Report {
         gpus = @($GpuInfo); agentConfigPath = $AgentConfigPath
     }
     New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
-    $report | ConvertTo-Json -Depth 5 | Set-Content -Path $reportPath -Encoding UTF8
+    $reportJSON = $report | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText($reportPath, $reportJSON, [System.Text.UTF8Encoding]::new($false))
     return $reportPath
 }
 
@@ -404,4 +405,4 @@ Write-Host "  - hostname: $tailscaleHostname"
 Write-Host "    role: rpc-node"
 Write-Host "    agent_port: $AgentPort"
 Write-Host "    rpc_port: $RPCPort"
-Write-Host "Next: run '.\bin\tether-agent.exe -pair' and enter its one-time code in the Orchestrator." -ForegroundColor Cyan
+Write-Host "Next: run '.\bin\tether-agent.exe'. Use '-pair' only for a new node or deliberate certificate rotation." -ForegroundColor Cyan

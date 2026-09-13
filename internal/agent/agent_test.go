@@ -21,7 +21,7 @@ func TestHandleCapabilitiesServesBootstrapReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := `{"observedAt":"2026-09-13T12:00:00Z","hostname":"mathesis","cudaVersion":"13.4","gpus":[{"name":"NVIDIA GPU","driverVersion":"1","vramBytes":4294967296,"vramFreeBytes":3435973837}]}`
-	if err := os.WriteFile(filepath.Join(dir, "bootstrap-report.json"), []byte(report), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "bootstrap-report.json"), append([]byte{0xEF, 0xBB, 0xBF}, []byte(report)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

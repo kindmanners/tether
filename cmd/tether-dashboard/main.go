@@ -208,7 +208,7 @@ func dashboardNodeFromRegistry(identity *certs.Identity, node *registry.Node) da
 	capabilities, err := client.GetCapabilities(addr)
 	if err != nil {
 		if result.Note == "" {
-			result.Note = "GPU capability report is unavailable"
+			result.Note = "GPU capability report is unavailable: " + err.Error()
 		}
 		return result
 	}
