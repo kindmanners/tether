@@ -50,6 +50,21 @@ func TestFetchModelStates(t *testing.T) {
 	}
 }
 
+func TestSortDashboardNodesPutsOrchestratorFirst(t *testing.T) {
+	nodes := []dashboardNode{
+		{Hostname: "mathesis"},
+		{Hostname: "ataraxia", IsOrchestrator: true},
+		{Hostname: "another-node"},
+	}
+	sortDashboardNodes(nodes)
+	if !nodes[0].IsOrchestrator || nodes[0].Hostname != "ataraxia" {
+		t.Fatalf("orchestrator was not first: %#v", nodes)
+	}
+	if nodes[1].Hostname != "another-node" || nodes[2].Hostname != "mathesis" {
+		t.Fatalf("non-orchestrator ordering is not deterministic: %#v", nodes)
+	}
+}
+
 func TestScanGGUFModelsMissingDirectory(t *testing.T) {
 	models, err := scanGGUFModels(filepath.Join(t.TempDir(), "missing"))
 	if err != nil {

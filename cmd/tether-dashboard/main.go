@@ -27,6 +27,7 @@ import (
 const orchestratorIdentityName = "orchestrator"
 
 type dashboardNode struct {
+	IsOrchestrator bool   `json:"isOrchestrator"`
 	Hostname       string `json:"hostname"`
 	Status         string `json:"status"`
 	TailscaleIP    string `json:"tailscaleIP,omitempty"`
@@ -132,7 +133,6 @@ func (s *dashboardServer) collect() (*dashboardResponse, error) {
 
 	reg := registry.Build(allowlist, peers)
 	nodes := reg.All()
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Hostname < nodes[j].Hostname })
 	selfHostname, selfHostnameErr := registry.SelfHostname()
 	localGPUs, localGPUErr := localNvidiaGPUs()
 	result := make([]dashboardNode, 0, len(nodes))
@@ -143,6 +143,7 @@ func (s *dashboardServer) collect() (*dashboardResponse, error) {
 		}
 		result = append(result, dashboardNodeFromRegistry(identity, node))
 	}
+	sortDashboardNodes(result)
 
 	models, err := scanGGUFModels(s.modelsDir)
 	if err != nil {
@@ -163,6 +164,15 @@ func (s *dashboardServer) collect() (*dashboardResponse, error) {
 		Nodes:       result,
 		Models:      models,
 	}, nil
+}
+
+func sortDashboardNodes(nodes []dashboardNode) {
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].IsOrchestrator != nodes[j].IsOrchestrator {
+			return nodes[i].IsOrchestrator
+		}
+		return nodes[i].Hostname < nodes[j].Hostname
+	})
 }
 
 func fetchModelStates(url string) (map[string]dashboardModelState, error) {
@@ -199,12 +209,13 @@ func fetchModelStates(url string) (map[string]dashboardModelState, error) {
 // this reads the local nvidia-smi executable and so never crosses a network.
 func dashboardNodeFromLocalHost(node *registry.Node, gpus []agent.GPUCapability, gpuErr error) dashboardNode {
 	result := dashboardNode{
-		Hostname:    node.Hostname,
-		Status:      strings.ToLower(node.Status.String()),
-		TailscaleIP: node.TailscaleIP,
-		AgentPort:   node.AgentPort,
-		RPCPort:     node.RPCPort,
-		AgentStatus: "Local GPU scan",
+		IsOrchestrator: true,
+		Hostname:       node.Hostname,
+		Status:         strings.ToLower(node.Status.String()),
+		TailscaleIP:    node.TailscaleIP,
+		AgentPort:      node.AgentPort,
+		RPCPort:        node.RPCPort,
+		AgentStatus:    "Local GPU scan",
 	}
 	if gpuErr != nil {
 		result.Note = "Local GPU information is unavailable: " + gpuErr.Error()

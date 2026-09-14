@@ -192,6 +192,15 @@ td {
   vertical-align: top;
 }
 td:first-child { font-weight: 700; }
+.node-role {
+  color: var(--signal);
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  margin-top: 0.32rem;
+  text-transform: uppercase;
+}
 
 .node-detail { color: var(--quiet); display: block; font-size: 0.72rem; margin-top: 0.28rem; }
 .state {

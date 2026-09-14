@@ -86,8 +86,9 @@ function renderNodes(nodes) {
     const endpoint = node.tailscaleIP && node.rpcPort ? `${node.tailscaleIP}:${node.rpcPort}` : "Not reported";
     const agentPort = node.agentPort ? `TCP ${node.agentPort}` : "Port not reported";
     const agent = node.agentStatus || agentPort;
+    const role = node.isOrchestrator ? '<span class="node-role">Orchestrator</span>' : "";
     row.innerHTML = `
-      <td>${escapeText(node.hostname)}<span class="node-detail"><span class="state ${stateClass(status)}">${escapeText(status)}</span></span></td>
+      <td>${escapeText(node.hostname)}${role}<span class="node-detail"><span class="state ${stateClass(status)}">${escapeText(status)}</span></span></td>
       <td>${escapeText(node.gpuModel || "Not reported")}<span class="node-detail">${escapeText(node.note || "")}</span></td>
       <td>${gibibytes(node.vramTotalBytes)}<span class="node-detail">${node.vramFreeBytes ? `${gibibytes(node.vramFreeBytes)} free` : "Free VRAM not reported"}</span></td>
       <td>${escapeText(endpoint)}</td>
