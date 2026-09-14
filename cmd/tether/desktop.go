@@ -12,6 +12,7 @@ import (
 
 	"tether/internal/agent"
 	"tether/internal/certs"
+	"tether/internal/executil"
 	"tether/internal/pairing"
 	"tether/internal/registry"
 	"tether/internal/trust"
@@ -280,6 +281,7 @@ func (a *OrchestratorApp) StartGateway() error {
 		return err
 	}
 	command := exec.Command(path, "--rpc", "auto")
+	executil.HideWindow(command)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("starting local gateway: %w", err)
 	}

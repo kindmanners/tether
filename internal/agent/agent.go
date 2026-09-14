@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"tether/internal/config"
+	"tether/internal/executil"
 	"tether/internal/process"
 )
 
@@ -236,7 +237,9 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 }
 
 func liveNvidiaGPUs() ([]GPUCapability, error) {
-	output, err := exec.Command("nvidia-smi", "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader,nounits").Output()
+	cmd := exec.Command("nvidia-smi", "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader,nounits")
+	executil.HideWindow(cmd)
+	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("running nvidia-smi: %w", err)
 	}

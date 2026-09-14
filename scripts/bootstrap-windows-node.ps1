@@ -18,6 +18,8 @@ param(
     [string]$TetherRoot,
     [string]$AgentExecutablePath,
     [string]$LlamaCppPath,
+    [string]$ProgressPath,
+    [string]$CancelPath,
     [int]$AgentPort = 7420,
     [int]$RPCPort = 50053,
     [string]$TailnetCIDR = '100.64.0.0/10',
@@ -35,8 +37,33 @@ if ([string]::IsNullOrWhiteSpace($TetherRoot) -and [string]::IsNullOrWhiteSpace(
 }
 
 function Write-Step {
-    param([string]$Message)
+    param([string]$Message, [string]$StepId)
     Write-Host "`n==> $Message" -ForegroundColor Cyan
+    if ($StepId -and $ProgressPath) {
+        $progress = [ordered]@{ step = $StepId; detail = $Message }
+        [System.IO.File]::WriteAllText($ProgressPath, ($progress | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
+    }
+}
+
+function Write-SetupProgress {
+    param([string]$StepId, [string]$Detail)
+    if (-not $ProgressPath) { return }
+    $progress = [ordered]@{ step = $StepId; detail = $Detail }
+    [System.IO.File]::WriteAllText($ProgressPath, ($progress | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
+}
+
+function Assert-SetupNotCancelled {
+    if ($CancelPath -and (Test-Path $CancelPath)) {
+        Write-SetupProgress 'cancelled' 'Setup was cancelled. No Agent configuration was written; run setup again when ready.'
+        throw [System.OperationCanceledException]::new('Setup was cancelled by closing Tether Agent.')
+    }
+}
+
+trap {
+    if ($_.Exception -is [System.OperationCanceledException]) {
+        Write-SetupProgress 'cancelled' $_.Exception.Message
+    } else { Write-SetupProgress 'failed' $_.Exception.Message }
+    throw
 }
 
 function Write-Check {
@@ -295,32 +322,127 @@ function Get-MSBuild {
     return $path.Trim()
 }
 
+function Get-CMakeCompileUnitCount {
+    param([string]$BuildPath)
+    $replyDir = Join-Path $BuildPath '.cmake\api\v1\reply'
+    $index = Get-ChildItem -Path $replyDir -Filter 'index-*.json' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if (-not $index) { return 0 }
+    try {
+        $indexData = Get-Content -Raw $index.FullName | ConvertFrom-Json
+        $modelFile = $indexData.reply.'codemodel-v2'.jsonFile
+        if (-not $modelFile) { return 0 }
+        $model = Get-Content -Raw (Join-Path $replyDir $modelFile) | ConvertFrom-Json
+        $configuration = $model.configurations | Select-Object -First 1
+        $targets = @{}
+        foreach ($target in $configuration.targets) { $targets[$target.id] = $target.jsonFile }
+        $root = $configuration.targets | Where-Object { $_.name -eq 'ggml-rpc-server' } | Select-Object -First 1
+        if (-not $root) { return 0 }
+        $visited = [System.Collections.Generic.HashSet[string]]::new()
+        $compileCounter = [ref]0
+        function Visit-CMakeTarget([string]$TargetID) {
+            if (-not $visited.Add($TargetID) -or -not $targets.ContainsKey($TargetID)) { return }
+            $targetData = Get-Content -Raw (Join-Path $replyDir $targets[$TargetID]) | ConvertFrom-Json
+            foreach ($source in @($targetData.sources)) {
+                if ($null -ne $source.PSObject.Properties['compileGroupIndex']) { $compileCounter.Value++ }
+            }
+            foreach ($dependency in @($targetData.dependencies)) { Visit-CMakeTarget $dependency.id }
+        }
+        Visit-CMakeTarget $root.id
+        return $compileCounter.Value
+    } catch { return 0 }
+}
+
+function Invoke-CancellableLlamaBuild {
+    param([string]$BuildPath, [int]$CompileUnits)
+    $stdout = Join-Path ([IO.Path]::GetTempPath()) ("tether-cmake-{0}.out" -f [guid]::NewGuid())
+    $stderr = Join-Path ([IO.Path]::GetTempPath()) ("tether-cmake-{0}.err" -f [guid]::NewGuid())
+    try {
+        $build = Start-Process -FilePath 'cmake' -ArgumentList @('--build', $BuildPath, '--config', 'Release', '--target', 'ggml-rpc-server', '--parallel', '4') `
+            -PassThru -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        $lastDetail = ''
+        while (-not $build.HasExited) {
+            if ($CancelPath -and (Test-Path $CancelPath)) {
+                & taskkill.exe /PID $build.Id /T /F 2>$null | Out-Null
+                Write-SetupProgress 'cancelled' 'Stopping the CMake/MSBuild compilation safely. Run setup again to resume.'
+                throw [System.OperationCanceledException]::new('Setup was cancelled while compiling llama.cpp.')
+            }
+            $build.Refresh()
+            $text = ((Get-Content -Raw $stdout -ErrorAction SilentlyContinue) + "`n" + (Get-Content -Raw $stderr -ErrorAction SilentlyContinue))
+            $matches = [regex]::Matches($text, '\[(\d+)\s*/\s*(\d+)\]')
+            if ($matches.Count -gt 0) {
+                $match = $matches[$matches.Count - 1]
+                $done = [int]$match.Groups[1].Value; $total = [int]$match.Groups[2].Value
+                $detail = "Compiling llama.cpp CUDA RPC server: $done of $total build steps finished; $($total - $done) remaining."
+            } elseif ($CompileUnits -gt 0) {
+                $compiled = [regex]::Matches($text, '(?im)^.*\.(?:c|cc|cpp|cxx|cu)(?::|\s|$)').Count
+                $detail = "Compiling llama.cpp CUDA RPC server: $compiled of $CompileUnits source units reported; about $([Math]::Max(0, $CompileUnits - $compiled)) remaining."
+            } else {
+                $detail = 'Compiling llama.cpp CUDA RPC server. CMake is checking and building the required source units.'
+            }
+            if ($detail -ne $lastDetail) { Write-SetupProgress 'rpc-server' $detail; $lastDetail = $detail }
+            Start-Sleep -Milliseconds 400
+        }
+        $build.WaitForExit()
+        $build.Refresh()
+        # Start-Process on some Windows builds does not populate ExitCode
+        # after a redirected, asynchronously monitored child exits. The
+        # caller independently verifies the expected RPC executable, so only
+        # reject a concrete non-zero code here; a missing property is not a
+        # build failure.
+        if ($null -ne $build.ExitCode -and $build.ExitCode -ne 0) {
+            throw "Building ggml-rpc-server failed (exit code $($build.ExitCode))."
+        }
+    } finally {
+        Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-LlamaCppBuild {
     param([string]$SourcePath, [string]$CudaPath)
     if (-not (Test-Path (Join-Path $SourcePath '.git'))) {
         if ($PSCmdlet.ShouldProcess($SourcePath, 'clone llama.cpp')) {
-            & git clone https://github.com/ggml-org/llama.cpp.git $SourcePath
+            # Keep native tool output visible in the elevated setup window,
+            # but do not let it enter this function's success-output stream.
+            # The caller captures this function's one return value as the RPC
+            # executable path, so any CMake/Git text here would corrupt YAML.
+            & git clone https://github.com/ggml-org/llama.cpp.git $SourcePath 2>&1 | Out-Host
             if ($LASTEXITCODE -ne 0) { throw "Could not clone llama.cpp (exit code $LASTEXITCODE)." }
         }
     }
     Push-Location $SourcePath
     try {
+        Assert-SetupNotCancelled
         # Fetch the configured object itself. `git fetch --tags` only updates
         # tag refs and can leave an otherwise valid, untagged pinned commit
         # absent from a fresh clone; checkout would then fail much later with
         # a misleading unknown-revision error.
-        & git fetch --no-tags origin $LlamaCppRevision
+        & git fetch --no-tags origin $LlamaCppRevision 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "Could not fetch llama.cpp revision $LlamaCppRevision." }
-        & git cat-file -e "$LlamaCppRevision^{commit}"
+        & git cat-file -e "$LlamaCppRevision^{commit}" 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "Fetched llama.cpp revision $LlamaCppRevision is not a commit object." }
-        & git checkout --detach $LlamaCppRevision
+        & git checkout --detach $LlamaCppRevision 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0) { throw "Could not check out llama.cpp revision $LlamaCppRevision." }
         Set-CudaEnvironment -CudaPath $CudaPath
         $buildPath = Join-Path $SourcePath 'build-rpc-cuda'
-        & cmake -S . -B $buildPath -G 'Visual Studio 17 2022' -A x64 -DGGML_CUDA=ON -DGGML_RPC=ON
+        $queryDir = Join-Path $buildPath '.cmake\api\v1\query'
+        New-Item -ItemType Directory -Force -Path $queryDir | Out-Null
+        New-Item -ItemType File -Force -Path (Join-Path $queryDir 'codemodel-v2') | Out-Null
+        & cmake -S . -B $buildPath -G 'Visual Studio 17 2022' -A x64 -DGGML_CUDA=ON -DGGML_RPC=ON 2>&1 | Out-Host
         if ($LASTEXITCODE -ne 0) { throw 'CMake configuration of the CUDA RPC server failed.' }
-        & cmake --build $buildPath --config Release --target ggml-rpc-server --parallel 4
-        if ($LASTEXITCODE -ne 0) { throw 'Building ggml-rpc-server failed.' }
+        Assert-SetupNotCancelled
+        $compileUnits = Get-CMakeCompileUnitCount -BuildPath $buildPath
+        if ($compileUnits -eq 0) {
+            # CMake's File API records a query during one configure pass and
+            # can publish its reply only on the next one. The second pass is
+            # inexpensive and gives the UI a real total before compilation.
+            Write-SetupProgress 'rpc-server' 'Calculating the exact CMake CUDA build plan…'
+            & cmake -S . -B $buildPath 2>&1 | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw 'CMake could not prepare the CUDA build plan.' }
+            $compileUnits = Get-CMakeCompileUnitCount -BuildPath $buildPath
+        }
+        if ($compileUnits -gt 0) { Write-SetupProgress 'rpc-server' "CMake prepared $compileUnits source units for the CUDA RPC build." }
+        Invoke-CancellableLlamaBuild -BuildPath $buildPath -CompileUnits $compileUnits
     } finally { Pop-Location }
     $rpcServer = Join-Path $SourcePath 'build-rpc-cuda\bin\Release\ggml-rpc-server.exe'
     if (-not (Test-Path $rpcServer)) { throw "Build completed without $rpcServer." }
@@ -332,8 +454,14 @@ function Write-AgentConfig {
     $configDir = Join-Path $env:APPDATA 'tether'
     $configPath = Join-Path $configDir 'agent_config.yaml'
     if ((Test-Path $configPath) -and -not $ReplaceAgentConfig) {
-        Write-Check "Keeping existing Agent configuration at $configPath" $true
-        return $configPath
+        $existing = Get-Content -Raw -Path $configPath -ErrorAction SilentlyContinue
+        $pathMatch = [regex]::Match($existing, "(?m)^rpc_server_path:\\s*'(?<path>(?:[^']|'')*)'\\s*$")
+        $existingRPCServer = if ($pathMatch.Success) { $pathMatch.Groups['path'].Value.Replace("''", "'") } else { $null }
+        if ($existingRPCServer -and (Test-Path -LiteralPath $existingRPCServer -PathType Leaf)) {
+            Write-Check "Keeping existing Agent configuration at $configPath" $true
+            return $configPath
+        }
+        Write-Check "Replacing unusable Agent configuration at $configPath" $false
     }
     if ($PSCmdlet.ShouldProcess($configPath, 'write local Tether Agent configuration')) {
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
@@ -386,7 +514,7 @@ if (-not $LlamaCppPath) {
     }
 }
 
-Write-Step 'Checking Windows GPU node prerequisites'
+Write-Step 'Checking Windows GPU node prerequisites' 'requirements'
 if ($Provision) { Require-Administrator }
 $gpuInfo = @(Get-NvidiaGPUInfo)
 Write-Check 'An NVIDIA GPU was detected' ($gpuInfo.Count -gt 0)
@@ -439,6 +567,7 @@ if ($script:missingRequirements.Count -gt 0) {
     throw "Audit failed. Resolve these requirements, then re-run: $missing"
 }
 if ($Provision) {
+    Write-Step 'Connecting this PC to Tailscale' 'tailscale'
     Ensure-TailscaleConnection
 }
 $tailscaleIP = Get-TailscaleIPv4
@@ -473,24 +602,31 @@ if ($AgentExecutablePath) {
         $agentOutput = Join-Path $TetherRoot 'bin\tether-agent.exe'
         if ($PSCmdlet.ShouldProcess($agentOutput, 'build Tether Agent')) {
             New-Item -ItemType Directory -Force -Path (Split-Path $agentOutput) | Out-Null
-            & go build -o $agentOutput ./cmd/tether-agent
+            # A Wails desktop executable must be built in production mode.
+            # Without this tag it compiles, but displays Wails' build-tags
+            # error dialog immediately when launched.
+            & go build -tags 'production,wv2runtime.embed' -ldflags '-H windowsgui' -o $agentOutput ./cmd/tether-agent
             if ($LASTEXITCODE -ne 0) { throw 'Building tether-agent failed.' }
         }
     } finally { Pop-Location }
 }
 $rpcServer = Join-Path $LlamaCppPath 'build-rpc-cuda\bin\Release\ggml-rpc-server.exe'
 if (-not $SkipRPCBuild) {
-    Write-Step 'Building pinned llama.cpp CUDA RPC server'
+Write-Step 'Building pinned llama.cpp CUDA RPC server' 'rpc-server'
     $rpcServer = Invoke-LlamaCppBuild -SourcePath $LlamaCppPath -CudaPath $cuda.Path
 } elseif (-not (Test-Path $rpcServer)) { throw "-SkipRPCBuild was specified but no RPC server exists at $rpcServer." }
 
-Write-Step 'Creating Tailnet-only firewall rules'
+Write-Step 'Creating Tailnet-only firewall rules' 'configuration'
 Ensure-FirewallRule -Name "Tether Agent TCP $AgentPort" -Port $AgentPort
 Ensure-FirewallRule -Name "Tether llama.cpp RPC TCP $RPCPort" -Port $RPCPort
-Write-Step 'Writing local Agent configuration'
+Write-Step 'Writing local Agent configuration' 'configuration'
 $configPath = Write-AgentConfig -RPCServerPath $rpcServer -ListenHost $tailscaleIP
 $reportPath = Write-Report -GpuInfo $gpuInfo -Cuda $cuda -TailscaleIP $tailscaleIP -TailscaleHostname $tailscaleHostname -AgentConfigPath $configPath
 Write-Host "`nProvisioning complete." -ForegroundColor Green
+if ($ProgressPath) {
+    $progress = [ordered]@{ step = 'complete'; detail = 'Local setup completed successfully.' }
+    [System.IO.File]::WriteAllText($ProgressPath, ($progress | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
+}
 Write-Host "Agent: $(Join-Path $TetherRoot 'bin\tether-agent.exe')"
 Write-Host "RPC endpoint: $tailscaleIP`:$RPCPort"
 Write-Host "Capability report: $reportPath"

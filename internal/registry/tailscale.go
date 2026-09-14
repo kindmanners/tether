@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"tether/internal/executil"
 )
 
 // tailscalePeer mirrors the subset of fields Tailscale's `tailscale status
@@ -23,10 +25,10 @@ import (
 // included) and is what we match against the allowlist's hostnames, since
 // it's the field Tailscale treats as the stable identifier.
 type tailscalePeer struct {
-	HostName    string   `json:"HostName"`
-	DNSName     string   `json:"DNSName"`
+	HostName     string   `json:"HostName"`
+	DNSName      string   `json:"DNSName"`
 	TailscaleIPs []string `json:"TailscaleIPs"`
-	Online      bool     `json:"Online"`
+	Online       bool     `json:"Online"`
 }
 
 // tailscaleStatus mirrors the top-level shape of `tailscale status --json`.
@@ -84,6 +86,7 @@ type LivePeer struct {
 // itself.
 func SelfHostname() (string, error) {
 	cmd := exec.Command("tailscale", "status", "--json")
+	executil.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -115,6 +118,7 @@ func SelfHostname() (string, error) {
 // allowlist matching logic never risks touching the JSON-parsing code.
 func QueryTailscalePeers() ([]LivePeer, error) {
 	cmd := exec.Command("tailscale", "status", "--json")
+	executil.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		// exec.ExitError means the command ran but exited non-zero (e.g.

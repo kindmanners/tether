@@ -26,13 +26,14 @@ New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 
 Push-Location $repositoryRoot
 try {
-    # wv2runtime.embed selects Wails' embedded Microsoft WebView2 bootstrapper
-    # rather than its default download-only strategy. -H windowsgui keeps the
-    # desktop applications from opening a console window for the end user.
-    & go build -tags wv2runtime.embed -ldflags '-H windowsgui' -o (Join-Path $OutputDirectory 'tether.exe') ./cmd/tether
+    # production selects Wails' runnable production application. wv2runtime.embed
+    # selects its embedded Microsoft WebView2 bootstrapper rather than the
+    # download-only strategy. -H windowsgui keeps desktop applications from
+    # opening a console window for the end user.
+    & go build -tags 'production,wv2runtime.embed' -ldflags '-H windowsgui' -o (Join-Path $OutputDirectory 'tether.exe') ./cmd/tether
     if ($LASTEXITCODE -ne 0) { throw 'Building tether.exe failed.' }
 
-    & go build -tags wv2runtime.embed -ldflags '-H windowsgui' -o (Join-Path $OutputDirectory 'tether-agent.exe') ./cmd/tether-agent
+    & go build -tags 'production,wv2runtime.embed' -ldflags '-H windowsgui' -o (Join-Path $OutputDirectory 'tether-agent.exe') ./cmd/tether-agent
     if ($LASTEXITCODE -ne 0) { throw 'Building tether-agent.exe failed.' }
 
     # The OpenAI gateway is not a WebView application, so it does not need the

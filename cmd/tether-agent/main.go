@@ -44,6 +44,11 @@ func main() {
 	forcePairing := flag.Bool("pair", false, "open a new pairing window before serving commands")
 	flag.Parse()
 	app := NewAgentApp(*forcePairing)
+	// Run the read-only readiness audit before Wails creates a window. This
+	// never installs software, writes an identity, or starts the Agent.
+	if _, err := app.State(); err != nil {
+		log.Printf("tether-agent: preflight could not complete: %v", err)
+	}
 	if err := wails.Run(&options.App{
 		Title:     "Tether Agent",
 		Width:     970,

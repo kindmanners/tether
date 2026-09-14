@@ -47,6 +47,21 @@ type Identity struct {
 	CertDER     []byte // raw DER bytes, needed for tls.Certificate construction
 }
 
+// Load reads an existing identity without creating or changing any local
+// files. Desktop preflight uses this deliberately: opening the Agent must be
+// able to explain a missing or broken identity without silently creating one
+// and making the machine look partially configured.
+func Load(name string) (*Identity, error) {
+	if err := validateName(name); err != nil {
+		return nil, fmt.Errorf("invalid identity name %q: %w", name, err)
+	}
+	d, err := dir()
+	if err != nil {
+		return nil, err
+	}
+	return load(filepath.Join(d, name+".key"), filepath.Join(d, name+".crt"))
+}
+
 // dir returns the directory identities are stored in:
 // %AppData%\tether\certs on Windows, ~/.config/tether/certs on Linux (or
 // $XDG_CONFIG_HOME/tether/certs if set), ~/Library/Application
@@ -369,6 +384,9 @@ func load(keyPath, certPath string) (*Identity, error) {
 	cert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("parsing certificate: %w", err)
+	}
+	if !privateKey.PublicKey.Equal(cert.PublicKey) {
+		return nil, fmt.Errorf("private key does not match certificate")
 	}
 
 	return &Identity{

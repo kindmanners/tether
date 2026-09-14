@@ -16,6 +16,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"tether/internal/executil"
 )
 
 // StartParams are the fully-resolved, already-validated parameters needed to
@@ -90,6 +92,7 @@ func (m *Manager) Start(params StartParams) error {
 		"--host", params.Host,
 		"--port", fmt.Sprintf("%d", params.Port),
 	)
+	executil.HideWindow(cmd)
 	// ggml-rpc-server reports device discovery, bind failures, and backend
 	// initialization details on its standard streams. Forward them through the
 	// Agent so an operator can diagnose a real hardware launch; leaving these
