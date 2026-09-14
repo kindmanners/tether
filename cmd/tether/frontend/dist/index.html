@@ -8,25 +8,79 @@
     <link rel="stylesheet" href="add-node.css" />
   </head>
   <body>
+    <div class="page-frame" aria-hidden="true"></div>
     <main>
-      <header class="masthead">
-        <div><p class="eyebrow">Tether / Orchestrator</p><h1>Make your GPUs one place to run.</h1></div>
-        <div class="header-actions"><button id="add-node" class="secondary">Add Tailnet node</button><button id="refresh" class="secondary">Refresh nodes</button></div>
+      <div class="utility-bar reveal">
+        <a class="wordmark" href="#top" aria-label="Tether Orchestrator home">Tether</a>
+        <p>Orchestrator</p>
+        <p class="utility-status"><span></span><span id="node-count">Checking nodes</span></p>
+      </div>
+
+      <header id="top" class="masthead reveal">
+        <div class="masthead-copy">
+          <p class="eyebrow">Distributed inference control</p>
+          <h1>Bring every GPU into one workspace.</h1>
+        </div>
+        <div class="header-actions">
+          <button id="add-node" class="secondary">Add Tailnet node</button>
+          <button id="refresh" class="secondary">Refresh nodes</button>
+        </div>
       </header>
-      <section class="gateway panel">
-        <div><p class="eyebrow">Local inference endpoint</p><strong id="gateway-state">Checking gateway…</strong><p id="gateway-detail"></p></div>
-        <div class="gateway-actions"><code id="gateway-endpoint">http://127.0.0.1:11435/v1</code><button id="start-gateway">Start gateway</button></div>
+
+      <section class="gateway panel reveal" aria-labelledby="gateway-heading">
+        <div class="section-number" aria-hidden="true">01</div>
+        <div class="gateway-copy">
+          <p class="eyebrow">Local inference endpoint</p>
+          <h2 id="gateway-heading"><strong id="gateway-state">Checking gateway…</strong></h2>
+          <p id="gateway-detail">Reading the local gateway state.</p>
+        </div>
+        <div class="gateway-actions">
+          <code id="gateway-endpoint">http://127.0.0.1:11435/v1</code>
+          <button id="start-gateway">Start gateway</button>
+        </div>
       </section>
-      <section class="readiness">
-        <div><span>01</span><strong>Tailscale</strong><p>Only allowlisted tailnet machines appear here.</p></div>
+
+      <section class="readiness reveal" aria-label="Connection process">
+        <div><span>01</span><strong>Tailscale</strong><p>Only allowlisted Tailnet machines appear here.</p></div>
         <div><span>02</span><strong>Pair</strong><p>Confirm the Agent’s one-time code before control is enabled.</p></div>
         <div><span>03</span><strong>Run</strong><p>Start each node’s local RPC server, then use the local API endpoint.</p></div>
       </section>
-      <section class="nodes-section"><div class="section-title"><p class="eyebrow">Inference nodes</p><p id="allowlist"></p></div><div id="nodes" class="nodes"></div></section>
-      <p id="notice" role="status"></p>
+
+      <section class="nodes-section reveal" aria-labelledby="nodes-heading">
+        <div class="section-title">
+          <div><p class="eyebrow">Cluster</p><h2 id="nodes-heading">Inference nodes</h2></div>
+          <div class="cluster-meta"><p><span id="online-count">—</span> online</p><p><span id="paired-count">—</span> paired</p></div>
+        </div>
+        <div id="nodes" class="nodes" aria-live="polite"></div>
+        <p id="allowlist" class="allowlist-path"></p>
+      </section>
+
+      <p id="notice" role="status" aria-live="polite"></p>
     </main>
-    <dialog id="pair-dialog"><form method="dialog"><p class="eyebrow">Pair node</p><h2 id="pair-title"></h2><p>Read the one-time code in Tether Agent on that machine, then enter it here. The code is never saved.</p><label>Pairing code<input id="pair-code" autocomplete="off" /></label><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button id="confirm-pair" value="default">Pair</button></div></form></dialog>
-    <dialog id="add-dialog"><form method="dialog"><p class="eyebrow">Add Tailnet node</p><h2>Choose the GPU machine</h2><p>Adding a machine grants Tether permission to look for its Agent. Pairing is still required before any control action.</p><label>Online Tailnet machine<select id="candidate-select"></select></label><label>RPC port<input id="candidate-port" inputmode="numeric" value="50053" /></label><div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button id="confirm-add" value="default">Add node</button></div></form></dialog>
+
+    <dialog id="pair-dialog">
+      <form method="dialog">
+        <div class="dialog-index" aria-hidden="true">PAIR</div>
+        <p class="eyebrow">Secure pairing</p>
+        <h2 id="pair-title"></h2>
+        <p>Read the one-time code in Tether Agent on that machine, then enter it here. The code is never saved.</p>
+        <label>Pairing code<input id="pair-code" autocomplete="off" /></label>
+        <div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button id="confirm-pair" value="default">Pair</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="add-dialog">
+      <form method="dialog">
+        <div class="dialog-index" aria-hidden="true">ADD</div>
+        <p class="eyebrow">Allowlist</p>
+        <h2>Choose the GPU machine</h2>
+        <p>Adding a machine grants Tether permission to look for its Agent. Pairing is still required before any control action.</p>
+        <label>Online Tailnet machine<select id="candidate-select"></select></label>
+        <label>RPC port<input id="candidate-port" inputmode="numeric" value="50053" /></label>
+        <div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button id="confirm-add" value="default">Add node</button></div>
+      </form>
+    </dialog>
+
     <script src="app.js"></script>
   </body>
 </html>

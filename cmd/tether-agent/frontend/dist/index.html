@@ -1,9 +1,76 @@
 <!doctype html>
-<html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Tether Agent</title><link rel="stylesheet" href="style.css" /></head><body>
-<main><header><div><p class="eyebrow">Tether / GPU node</p><h1 id="headline">Checking this machine&hellip;</h1><p id="summary" class="summary">Tether is verifying local files and secure connectivity before offering any setup action.</p><p id="last-refreshed" class="refresh-meta">Last refreshed: checking&hellip;</p></div><button id="refresh" class="secondary">Check again</button></header>
-<section id="setup-panel" class="action-panel" hidden><p class="eyebrow">Guided local setup</p><h2>Set up this GPU node</h2><p>The audited Windows script will check and install prerequisites, ask you to sign in to Tailscale if needed, build the pinned llama.cpp CUDA RPC server, add Tailnet-only firewall rules, and write the local Agent configuration. Each live step appears in the checklist below.</p><button id="provision">Run audited local setup</button></section>
-<section id="ready-panel" class="action-panel ready" hidden><p class="eyebrow">This node is ready</p><h2>Use Tether on the paired Orchestrator.</h2><p id="service-note">The local Agent service is starting.</p></section>
-<section id="pair-panel" class="action-panel" hidden><p class="eyebrow">Secure pairing</p><h2>Pair when the Orchestrator is ready.</h2><p>Pairing creates a short-lived one-time code and pins the Orchestrator certificate. It does not install or change local GPU software.</p><button id="open-pair">Open pairing window</button></section>
-<section class="checklist-panel" aria-labelledby="checklist-heading"><div class="section-heading"><div><p class="eyebrow">Read-only preflight</p><h2 id="checklist-heading">What this Agent checked</h2></div><p class="legend"><span class="dot not-started"></span> Not started <span class="dot started"></span> In progress <span class="dot finished"></span> Finished</p></div><ol id="checklist" class="checklist" aria-live="polite"></ol></section>
-<section id="code-panel" class="code-panel" hidden><p class="eyebrow">One-time pairing code</p><strong id="pair-code"></strong><p>Enter this code in Tether on the Orchestrator within two minutes. It is shown only on this machine and is never saved.</p></section>
-<section class="machine panel"><p class="eyebrow">Machine record</p><dl><div><dt>Tailscale hostname</dt><dd id="hostname">Checking&hellip;</dd></div><div><dt>Agent configuration</dt><dd id="config">Checking&hellip;</dd><button id="finish-setup" class="secondary" hidden>Finish local setup</button></div><div><dt>GPU setup report</dt><dd id="report">Checking&hellip;</dd></div></dl></section><p id="notice" role="status"></p></main><script src="app.js"></script></body></html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tether Agent</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="page-frame" aria-hidden="true"></div>
+    <main>
+      <div class="utility-bar reveal">
+        <a class="wordmark" href="#top" aria-label="Tether Agent home">Tether</a>
+        <p>Agent</p>
+        <p class="utility-status"><span></span><span id="machine-state">Checking machine</span></p>
+      </div>
+
+      <header id="top" class="status-hero reveal">
+        <div class="hero-index" aria-hidden="true">01</div>
+        <div class="hero-copy">
+          <p class="eyebrow">GPU node readiness</p>
+          <h1 id="headline">Checking this machine…</h1>
+          <p id="summary" class="summary">Tether is verifying local files and secure connectivity before offering any setup action.</p>
+          <p id="last-refreshed" class="refresh-meta">Last refreshed: checking…</p>
+        </div>
+        <button id="refresh" class="secondary">Check again</button>
+      </header>
+
+      <div class="action-stack reveal">
+        <section id="setup-panel" class="action-panel" hidden>
+          <div><p class="eyebrow">Guided local setup</p><h2>Set up this GPU node</h2></div>
+          <p>The audited Windows script checks prerequisites, handles Tailscale sign-in when needed, builds the pinned llama.cpp CUDA RPC server, adds Tailnet-only firewall rules, and writes the local Agent configuration.</p>
+          <button id="provision">Run audited local setup</button>
+        </section>
+
+        <section id="ready-panel" class="action-panel ready" hidden>
+          <div><p class="eyebrow">This node is ready</p><h2>Use Tether on the paired Orchestrator.</h2></div>
+          <p id="service-note">The local Agent service is starting.</p>
+        </section>
+
+        <section id="pair-panel" class="action-panel" hidden>
+          <div><p class="eyebrow">Secure pairing</p><h2>Pair when the Orchestrator is ready.</h2></div>
+          <p>Pairing creates a short-lived one-time code and pins the Orchestrator certificate. It does not install or change local GPU software.</p>
+          <button id="open-pair">Open pairing window</button>
+        </section>
+      </div>
+
+      <section class="checklist-panel reveal" aria-labelledby="checklist-heading">
+        <div class="section-heading">
+          <div><p class="eyebrow">Read-only preflight</p><h2 id="checklist-heading">What this Agent checked</h2></div>
+          <div class="progress-summary"><p id="progress-caption">Checking progress</p><strong id="progress-count">—</strong></div>
+        </div>
+        <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
+        <ol id="checklist" class="checklist" aria-live="polite"></ol>
+      </section>
+
+      <section id="code-panel" class="code-panel reveal" hidden>
+        <div><p class="eyebrow">One-time pairing code</p><h2>Enter this code in Tether</h2></div>
+        <strong id="pair-code"></strong>
+        <p>Use it on the Orchestrator within two minutes. It is shown only on this machine and is never saved.</p>
+      </section>
+
+      <section class="machine panel reveal" aria-labelledby="machine-heading">
+        <div class="section-heading compact"><div><p class="eyebrow">Machine record</p><h2 id="machine-heading">Local configuration</h2></div></div>
+        <dl>
+          <div><dt>Tailscale hostname</dt><dd id="hostname">Checking…</dd></div>
+          <div><dt>Agent configuration</dt><dd id="config">Checking…</dd><button id="finish-setup" class="secondary" hidden>Finish local setup</button></div>
+          <div><dt>GPU setup report</dt><dd id="report">Checking…</dd></div>
+        </dl>
+      </section>
+
+      <p id="notice" role="status" aria-live="polite"></p>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>
