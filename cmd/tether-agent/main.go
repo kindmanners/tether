@@ -6,8 +6,10 @@ package main
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -19,12 +21,19 @@ import (
 	"tether/internal/process"
 	"tether/internal/registry"
 	"tether/internal/trust"
+
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
 // agentPort is shared by the short-lived pairing server and the persistent
 // command server. Pairing releases the listener before the command server is
 // started, so there is never more than one protocol listening on this port.
 const agentPort = 7420
+
+//go:embed all:frontend/dist
+var desktopAssets embed.FS
 
 // orchestratorIdentityName must match cmd/tether's identity name. Pairing
 // pins that certificate under this name, which makes it both the marker that
@@ -34,6 +43,28 @@ const orchestratorIdentityName = "orchestrator"
 func main() {
 	forcePairing := flag.Bool("pair", false, "open a new pairing window before serving commands")
 	flag.Parse()
+	app := NewAgentApp(*forcePairing)
+	if err := wails.Run(&options.App{
+		Title:     "Tether Agent",
+		Width:     970,
+		Height:    700,
+		MinWidth:  760,
+		MinHeight: 560,
+		AssetServer: &assetserver.Options{
+			Assets: desktopAssets,
+		},
+		OnStartup:  app.startup,
+		OnShutdown: app.shutdown,
+		Bind:       []interface{}{app},
+	}); err != nil {
+		log.Fatal(err)
+	}
+}
+
+// runTerminalAgent remains available for support and tests of the original
+// command flow. Normal tether-agent launches now use the desktop onboarding
+// shell above.
+func runTerminalAgent(forcePairing bool) {
 
 	hostname, err := registry.SelfHostname()
 	if err != nil {
@@ -51,7 +82,7 @@ func main() {
 	}
 
 	paired := false
-	if !*forcePairing {
+	if !forcePairing {
 		paired, err = isPaired()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "tether-agent: could not use existing pairing: %v\n", err)
@@ -59,7 +90,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	if !paired || *forcePairing {
+	if !paired || forcePairing {
 		if err := pair(identity, hostname); err != nil {
 			fmt.Fprintf(os.Stderr, "tether-agent: pairing did not complete: %v\n", err)
 			fmt.Fprintln(os.Stderr, "tether-agent: run tether-agent again to try once more.")

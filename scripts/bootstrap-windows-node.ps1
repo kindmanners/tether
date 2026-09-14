@@ -16,6 +16,7 @@ param(
     [switch]$ReplaceAgentConfig,
     [switch]$SkipRPCBuild,
     [string]$TetherRoot,
+    [string]$AgentExecutablePath,
     [string]$LlamaCppPath,
     [int]$AgentPort = 7420,
     [int]$RPCPort = 50053,
@@ -29,7 +30,7 @@ $ErrorActionPreference = 'Stop'
 $script:missingRequirements = [System.Collections.Generic.List[string]]::new()
 $script:installationOccurred = $false
 
-if ([string]::IsNullOrWhiteSpace($TetherRoot)) {
+if ([string]::IsNullOrWhiteSpace($TetherRoot) -and [string]::IsNullOrWhiteSpace($AgentExecutablePath)) {
     $TetherRoot = Split-Path -Parent $PSScriptRoot
 }
 
@@ -138,6 +139,66 @@ function Ensure-Tool {
     return $false
 }
 
+function Ensure-TailscaleTool {
+    if (Get-CommandPath 'tailscale') {
+        Write-Check 'Tailscale is available' $true
+        return
+    }
+    Write-Check 'Tailscale is not available' $false
+    if (-not $InstallMissing) {
+        $script:missingRequirements.Add('Tailscale')
+        return
+    }
+
+    Install-WingetPackage -Id 'Tailscale.Tailscale' -Name 'Tailscale'
+    $script:installationOccurred = $true
+    # Tailscale installs a standalone CLI in this conventional directory.
+    # Refresh just this process before checking again, so a node that only
+    # lacked Tailscale can continue directly to its intentional browser login
+    # instead of asking the user to repeat setup for a stale PATH.
+    $tailscaleDirectory = Join-Path $env:ProgramFiles 'Tailscale'
+    if (Test-Path (Join-Path $tailscaleDirectory 'tailscale.exe')) {
+        $env:Path = "$tailscaleDirectory;$env:Path"
+    }
+    if (Get-CommandPath 'tailscale') {
+        Write-Check 'Tailscale is available after installation' $true
+        return
+    }
+    $script:missingRequirements.Add('Tailscale')
+}
+
+function Ensure-TailscaleConnection {
+    if (-not (Get-CommandPath 'tailscale')) {
+        throw 'Tailscale is unavailable after installation. Re-open Tether Agent and run setup again.'
+    }
+
+    # A successful status query with a DNS name proves both the daemon and a
+    # Tailnet identity are ready. Do not call `tailscale up` unnecessarily:
+    # it can otherwise alter an already-working node's preferences.
+    try {
+        $status = & tailscale status --json 2>$null | ConvertFrom-Json
+        if ($LASTEXITCODE -eq 0 -and $status.Self.DNSName) {
+            Write-Check 'Tailscale is connected to a Tailnet' $true
+            return
+        }
+    } catch { }
+
+    Write-Step 'Connecting Tailscale'
+    Write-Host 'Tailscale needs a Tailnet login. A browser window should open; sign in or join the shared Tailnet, then return here.' -ForegroundColor Yellow
+    & tailscale up
+    if ($LASTEXITCODE -ne 0) {
+        throw "Tailscale sign-in did not complete (exit code $LASTEXITCODE). A browser window should have opened; complete login, then run setup again."
+    }
+    try {
+        $status = & tailscale status --json 2>$null | ConvertFrom-Json
+        if ($LASTEXITCODE -eq 0 -and $status.Self.DNSName) {
+            Write-Check 'Tailscale is connected to a Tailnet' $true
+            return
+        }
+    } catch { }
+    throw 'Tailscale did not report a Tailnet identity after sign-in. Complete the browser login, then run setup again.'
+}
+
 function Install-VisualStudioBuildTools {
     if (-not (Get-CommandPath 'winget')) {
         throw 'WinGet is required to install Visual Studio Build Tools. Install Microsoft App Installer, then re-run this script.'
@@ -244,8 +305,14 @@ function Invoke-LlamaCppBuild {
     }
     Push-Location $SourcePath
     try {
-        & git fetch --tags origin
+        # Fetch the configured object itself. `git fetch --tags` only updates
+        # tag refs and can leave an otherwise valid, untagged pinned commit
+        # absent from a fresh clone; checkout would then fail much later with
+        # a misleading unknown-revision error.
+        & git fetch --no-tags origin $LlamaCppRevision
         if ($LASTEXITCODE -ne 0) { throw "Could not fetch llama.cpp revision $LlamaCppRevision." }
+        & git cat-file -e "$LlamaCppRevision^{commit}"
+        if ($LASTEXITCODE -ne 0) { throw "Fetched llama.cpp revision $LlamaCppRevision is not a commit object." }
         & git checkout --detach $LlamaCppRevision
         if ($LASTEXITCODE -ne 0) { throw "Could not check out llama.cpp revision $LlamaCppRevision." }
         Set-CudaEnvironment -CudaPath $CudaPath
@@ -303,8 +370,21 @@ if ($InstallMissing -and -not $Provision) {
 if ($WhatIfPreference -and $InstallMissing) {
     throw '-WhatIf cannot be combined with -InstallMissing because package installation is intentionally not simulated.'
 }
-if (-not (Test-Path $TetherRoot)) { throw "Tether root does not exist: $TetherRoot" }
-if (-not $LlamaCppPath) { $LlamaCppPath = Join-Path $TetherRoot 'llama.cpp' }
+if ($AgentExecutablePath) {
+    if (-not (Test-Path $AgentExecutablePath) -or (Get-Item $AgentExecutablePath).PSIsContainer) {
+        throw "AgentExecutablePath must point to tether-agent.exe: $AgentExecutablePath"
+    }
+    $AgentExecutablePath = (Resolve-Path $AgentExecutablePath).Path
+} elseif (-not (Test-Path $TetherRoot)) {
+    throw "Tether root does not exist: $TetherRoot"
+}
+if (-not $LlamaCppPath) {
+    if ($TetherRoot) {
+        $LlamaCppPath = Join-Path $TetherRoot 'llama.cpp'
+    } else {
+        $LlamaCppPath = Join-Path (Split-Path -Parent $AgentExecutablePath) 'llama.cpp'
+    }
+}
 
 Write-Step 'Checking Windows GPU node prerequisites'
 if ($Provision) { Require-Administrator }
@@ -314,8 +394,10 @@ if ($gpuInfo.Count -eq 0) { throw 'No NVIDIA GPU was detected; this node cannot 
 
 Ensure-Tool -Command 'git' -PackageId 'Git.Git' -Name 'Git'
 Ensure-Tool -Command 'cmake' -PackageId 'Kitware.CMake' -Name 'CMake'
-Ensure-Tool -Command 'go' -PackageId 'GoLang.Go' -Name 'Go'
-Ensure-Tool -Command 'tailscale' -PackageId 'Tailscale.Tailscale' -Name 'Tailscale'
+if (-not $AgentExecutablePath) {
+    Ensure-Tool -Command 'go' -PackageId 'GoLang.Go' -Name 'Go'
+}
+Ensure-TailscaleTool
 $msbuild = Get-MSBuild
 Write-Check 'Visual Studio C++ Build Tools are available' ($null -ne $msbuild)
 if (-not $msbuild) {
@@ -349,6 +431,16 @@ Assert-PortIsFree -Port $RPCPort -Purpose 'llama.cpp RPC'
 if ($RPCPort -eq 50052) {
     Write-Warning 'TCP 50052 was occupied by Incredibuild LicenseService on Mathesis. Prefer 50053 unless 50052 is verified safe on this host.'
 }
+if ($script:missingRequirements.Count -gt 0) {
+    $missing = $script:missingRequirements -join ', '
+    if ($script:installationOccurred) {
+        throw "Dependencies were installed, but this shell may still have a stale PATH. Re-open elevated PowerShell and re-run the script. Remaining checks: $missing"
+    }
+    throw "Audit failed. Resolve these requirements, then re-run: $missing"
+}
+if ($Provision) {
+    Ensure-TailscaleConnection
+}
 $tailscaleIP = Get-TailscaleIPv4
 Write-Check 'A Tailscale IPv4 address is available' ($null -ne $tailscaleIP)
 if (-not $tailscaleIP) { $script:missingRequirements.Add('an active Tailscale IPv4 connection') }
@@ -359,9 +451,6 @@ if (-not $tailscaleHostname) { $script:missingRequirements.Add('a Tailscale host
 else { Write-Host "Tailscale hostname: $tailscaleHostname" }
 if ($script:missingRequirements.Count -gt 0) {
     $missing = $script:missingRequirements -join ', '
-    if ($script:installationOccurred) {
-        throw "Dependencies were installed, but this shell may still have a stale PATH. Re-open elevated PowerShell and re-run the script. Remaining checks: $missing"
-    }
     throw "Audit failed. Resolve these requirements, then re-run: $missing"
 }
 if (-not $Provision) {
@@ -373,17 +462,22 @@ if ($WhatIfPreference) {
     exit 0
 }
 
-Write-Step 'Building local Tether Agent'
 Ensure-CudaRuntimePath -CudaPath $cuda.Path
-Push-Location $TetherRoot
-try {
-    $agentOutput = Join-Path $TetherRoot 'bin\tether-agent.exe'
-    if ($PSCmdlet.ShouldProcess($agentOutput, 'build Tether Agent')) {
-        New-Item -ItemType Directory -Force -Path (Split-Path $agentOutput) | Out-Null
-        & go build -o $agentOutput ./cmd/tether-agent
-        if ($LASTEXITCODE -ne 0) { throw 'Building tether-agent failed.' }
-    }
-} finally { Pop-Location }
+if ($AgentExecutablePath) {
+    $agentOutput = $AgentExecutablePath
+    Write-Check "Using supplied Tether Agent at $agentOutput" $true
+} else {
+    Write-Step 'Building local Tether Agent'
+    Push-Location $TetherRoot
+    try {
+        $agentOutput = Join-Path $TetherRoot 'bin\tether-agent.exe'
+        if ($PSCmdlet.ShouldProcess($agentOutput, 'build Tether Agent')) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $agentOutput) | Out-Null
+            & go build -o $agentOutput ./cmd/tether-agent
+            if ($LASTEXITCODE -ne 0) { throw 'Building tether-agent failed.' }
+        }
+    } finally { Pop-Location }
+}
 $rpcServer = Join-Path $LlamaCppPath 'build-rpc-cuda\bin\Release\ggml-rpc-server.exe'
 if (-not $SkipRPCBuild) {
     Write-Step 'Building pinned llama.cpp CUDA RPC server'

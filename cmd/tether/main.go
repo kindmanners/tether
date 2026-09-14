@@ -5,9 +5,10 @@ package main
 
 import (
 	"bufio"
+	"embed"
 	"fmt"
 	"io"
-	"os"
+	"log"
 	"strconv"
 	"strings"
 
@@ -16,9 +17,16 @@ import (
 	"tether/internal/pairing"
 	"tether/internal/registry"
 	"tether/internal/trust"
+
+	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/options"
+	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
 const allowlistPath = "node_allowlist.yaml"
+
+//go:embed all:frontend/dist
+var desktopAssets embed.FS
 
 // orchestratorIdentityName is a fixed identity name for the Orchestrator
 // itself, unlike Agents (which are keyed by their own Tailscale
@@ -30,82 +38,21 @@ const allowlistPath = "node_allowlist.yaml"
 const orchestratorIdentityName = "orchestrator"
 
 func main() {
-	allowlist, err := registry.LoadAllowlist(allowlistPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "loading allowlist: %v\n", err)
-		os.Exit(1)
-	}
-
-	peers, err := registry.QueryTailscalePeers()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "querying tailscale: %v\n", err)
-		os.Exit(1)
-	}
-
-	reg := registry.Build(allowlist, peers)
-
-	fmt.Println("Tether nodes:")
-	nodes := reg.All()
-	for i, node := range nodes {
-		fmt.Printf("  [%d] %-12s %-16s %s\n", i+1, node.Hostname, node.Status, node.TailscaleIP)
-	}
-
-	if len(nodes) == 0 {
-		fmt.Println("  (none found — check node_allowlist.yaml and that tailscale is running)")
-		return
-	}
-
-	fmt.Println()
-	fmt.Print("Select a node to pair with or control. Enter a number, or press Enter to exit: ")
-
-	stdin := bufio.NewScanner(os.Stdin)
-	if !stdin.Scan() {
-		return
-	}
-	choice := strings.TrimSpace(stdin.Text())
-	if choice == "" {
-		return
-	}
-
-	node, err := selectNode(nodes, choice)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
-
-	if node.Status != registry.StatusOnline {
-		fmt.Fprintf(os.Stderr, "%s is not currently online — start tether-agent on that machine first.\n", node.Hostname)
-		os.Exit(1)
-	}
-
-	identity, err := certs.LoadOrCreate(orchestratorIdentityName)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "loading orchestrator identity: %v\n", err)
-		os.Exit(1)
-	}
-
-	addr := fmt.Sprintf("%s:%d", node.TailscaleIP, node.AgentPort)
-	paired, err := isPaired(node.Hostname)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "checking trust for %q: %v\n", node.Hostname, err)
-		fmt.Fprintln(os.Stderr, "Re-pair this Agent to replace its invalid or expired certificate pin.")
-		os.Exit(1)
-	}
-	if !paired {
-		if err := pair(stdin, identity, node, addr); err != nil {
-			fmt.Fprintf(os.Stderr, "pairing failed: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
-	tlsConfig, err := trust.PinnedTLSConfig(identity.TLSCertificate(), node.Hostname, false)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "building pinned mTLS configuration for %q: %v\n", node.Hostname, err)
-		os.Exit(1)
-	}
-	if err := controlNode(stdin, os.Stdout, agent.NewClient(tlsConfig), node, addr); err != nil {
-		fmt.Fprintf(os.Stderr, "controlling %q: %v\n", node.Hostname, err)
-		os.Exit(1)
+	app := NewOrchestratorApp(allowlistPath)
+	if err := wails.Run(&options.App{
+		Title:     "Tether",
+		Width:     1180,
+		Height:    760,
+		MinWidth:  920,
+		MinHeight: 620,
+		AssetServer: &assetserver.Options{
+			Assets: desktopAssets,
+		},
+		OnStartup:  app.startup,
+		OnShutdown: app.shutdown,
+		Bind:       []interface{}{app},
+	}); err != nil {
+		log.Fatal(err)
 	}
 }
 
