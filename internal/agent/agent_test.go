@@ -12,9 +12,10 @@ import (
 
 func TestHandleCapabilitiesServesBootstrapReport(t *testing.T) {
 	configHome := t.TempDir()
-	// Windows uses APPDATA for os.UserConfigDir; setting only XDG_CONFIG_HOME
-	// would accidentally read the developer's real bootstrap report.
+	// os.UserConfigDir uses APPDATA on Windows and XDG_CONFIG_HOME on Linux.
+	// Set both so this test never reads or writes the developer's local state.
 	t.Setenv("APPDATA", configHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
 	dir, err := agentconfig.DefaultDirectory()
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +41,9 @@ func TestHandleCapabilitiesServesBootstrapReport(t *testing.T) {
 }
 
 func TestHandleCapabilitiesReportsMissingFile(t *testing.T) {
-	t.Setenv("APPDATA", t.TempDir())
+	configHome := t.TempDir()
+	t.Setenv("APPDATA", configHome)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
 	request := httptest.NewRequest(http.MethodGet, "/capabilities", nil)
 	recorder := httptest.NewRecorder()
 	(&Server{}).handleCapabilities(recorder, request)
