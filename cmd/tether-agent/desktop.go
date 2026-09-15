@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +27,7 @@ import (
 
 // AgentApp owns only this machine's setup and local command daemon. It never
 // accepts a remote executable path or bind address: those remain local config
-// written by the audited Windows provisioner.
+// written only by the audited local provisioner.
 type AgentApp struct {
 	mu                 sync.Mutex
 	forcePairing       bool
@@ -41,6 +42,7 @@ type AgentApp struct {
 	provisioningError  string
 	progressPath       string
 	cancelPath         string
+	logPath            string
 }
 
 // AgentSetupCheck is one visible, read-only preflight result. Status is
@@ -54,25 +56,27 @@ type AgentSetupCheck struct {
 }
 
 type AgentSetupState struct {
-	Hostname           string            `json:"hostname"`
-	Platform           string            `json:"platform"`
-	ConfigPath         string            `json:"configPath"`
-	Configured         bool              `json:"configured"`
-	ConfigurationNote  string            `json:"configurationNote"`
-	BootstrapReady     bool              `json:"bootstrapReady"`
-	BootstrapNote      string            `json:"bootstrapNote"`
-	Paired             bool              `json:"paired"`
-	PairingActive      bool              `json:"pairingActive"`
-	PairingCode        string            `json:"pairingCode"`
-	ServiceRunning     bool              `json:"serviceRunning"`
-	ServiceDetail      string            `json:"serviceDetail"`
-	CanProvision       bool              `json:"canProvision"`
-	Ready              bool              `json:"ready"`
-	Checklist          []AgentSetupCheck `json:"checklist"`
-	Provisioning       bool              `json:"provisioning"`
-	ProvisioningDetail string            `json:"provisioningDetail"`
-	ProvisioningError  string            `json:"provisioningError"`
-	CheckedAt          string            `json:"checkedAt"`
+	Hostname            string            `json:"hostname"`
+	Platform            string            `json:"platform"`
+	ConfigPath          string            `json:"configPath"`
+	Configured          bool              `json:"configured"`
+	ConfigurationNote   string            `json:"configurationNote"`
+	BootstrapReady      bool              `json:"bootstrapReady"`
+	BootstrapNote       string            `json:"bootstrapNote"`
+	Paired              bool              `json:"paired"`
+	PairingActive       bool              `json:"pairingActive"`
+	PairingCode         string            `json:"pairingCode"`
+	ServiceRunning      bool              `json:"serviceRunning"`
+	ServiceDetail       string            `json:"serviceDetail"`
+	CanProvision        bool              `json:"canProvision"`
+	Ready               bool              `json:"ready"`
+	Checklist           []AgentSetupCheck `json:"checklist"`
+	Provisioning        bool              `json:"provisioning"`
+	ProvisioningDetail  string            `json:"provisioningDetail"`
+	ProvisioningError   string            `json:"provisioningError"`
+	ProvisioningLog     string            `json:"provisioningLog"`
+	ProvisioningLogPath string            `json:"provisioningLogPath"`
+	CheckedAt           string            `json:"checkedAt"`
 }
 
 func NewAgentApp(forcePairing bool) *AgentApp {
@@ -117,7 +121,7 @@ func (a *AgentApp) shutdown(context.Context) {
 // written to logs.
 func (a *AgentApp) State() (*AgentSetupState, error) {
 	state := &AgentSetupState{Platform: runtime.GOOS, CheckedAt: time.Now().Format(time.RFC3339)}
-	checks := make([]AgentSetupCheck, 0, 6)
+	checks := make([]AgentSetupCheck, 0, 12)
 	hostname, hostnameErr := registry.SelfHostname()
 	if hostnameErr != nil {
 		state.ConfigurationNote = "Tailscale is required: " + hostnameErr.Error()
@@ -190,7 +194,10 @@ func (a *AgentApp) State() (*AgentSetupState, error) {
 		state.BootstrapNote = reportDetail
 		checks = append(checks, setupCheck("local-setup", "Complete the local GPU setup", reportDetail, false))
 	}
-	state.CanProvision = runtime.GOOS == "windows"
+	if runtime.GOOS == "linux" && (!state.Configured || !state.BootstrapReady) {
+		checks = append(checks, linuxPreflightChecks()...)
+	}
+	state.CanProvision = runtime.GOOS == "windows" || runtime.GOOS == "linux"
 	state.Ready = hostname != "" && identityReady && state.Paired && state.Configured && state.BootstrapReady
 
 	a.mu.Lock()
@@ -202,10 +209,16 @@ func (a *AgentApp) State() (*AgentSetupState, error) {
 	state.ProvisioningDetail = a.provisioningDetail
 	state.ProvisioningError = a.provisioningError
 	progressPath := a.progressPath
+	logPath := a.logPath
 	a.mu.Unlock()
 	if progressPath == "" {
 		progressPath = defaultSetupProgressPath()
 	}
+	if logPath == "" {
+		logPath = defaultSetupLogPath()
+	}
+	state.ProvisioningLogPath = logPath
+	state.ProvisioningLog = readSetupLogTail(logPath)
 	progress := readSetupProgress(progressPath)
 	if state.Provisioning {
 		applySetupProgress(checks, progress)
@@ -234,6 +247,80 @@ func (a *AgentApp) State() (*AgentSetupState, error) {
 	return state, nil
 }
 
+// linuxPreflightChecks is deliberately read-only. The bootstrap script repeats
+// these checks immediately before changing anything, so a stale UI result can
+// never become an implicit authorization to provision a different machine.
+func linuxPreflightChecks() []AgentSetupCheck {
+	checks := make([]AgentSetupCheck, 0, 6)
+	if path, err := exec.LookPath("nvidia-smi"); err != nil {
+		checks = append(checks, setupCheck("nvidia", "Verify the NVIDIA driver and GPU", "nvidia-smi is not available. Install a supported NVIDIA driver before local setup.", false))
+	} else if output, err := exec.Command(path, "-L").Output(); err != nil || strings.TrimSpace(string(output)) == "" {
+		checks = append(checks, setupCheck("nvidia", "Verify the NVIDIA driver and GPU", "The NVIDIA driver did not report a usable GPU.", false))
+	} else {
+		checks = append(checks, setupCheck("nvidia", "Verify the NVIDIA driver and GPU", "Detected "+strings.TrimSpace(string(output))+".", true))
+	}
+
+	if path, err := exec.LookPath("nvcc"); err != nil {
+		checks = append(checks, setupCheck("cuda", "Verify CUDA Toolkit availability", "nvcc is not available. Install the NVIDIA CUDA Toolkit before local setup.", false))
+	} else if output, err := exec.Command(path, "--version").Output(); err != nil {
+		checks = append(checks, setupCheck("cuda", "Verify CUDA Toolkit availability", "CUDA Toolkit could not be queried: "+err.Error(), false))
+	} else {
+		version := "CUDA Toolkit is available."
+		if lines := strings.FieldsFunc(string(output), func(r rune) bool { return r == '\n' || r == '\r' }); len(lines) > 0 {
+			version = strings.TrimSpace(lines[len(lines)-1])
+		}
+		checks = append(checks, setupCheck("cuda", "Verify CUDA Toolkit availability", version, true))
+	}
+
+	missingTools := make([]string, 0, 3)
+	for _, tool := range []string{"git", "cmake"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			missingTools = append(missingTools, tool)
+		}
+	}
+	if _, err := exec.LookPath("cc"); err != nil {
+		if _, gccErr := exec.LookPath("gcc"); gccErr != nil {
+			if _, clangErr := exec.LookPath("clang"); clangErr != nil {
+				missingTools = append(missingTools, "a C/C++ compiler")
+			}
+		}
+	}
+	if len(missingTools) == 0 {
+		checks = append(checks, setupCheck("build-tools", "Verify Git, CMake, and compiler", "Git, CMake, and a C/C++ compiler are available.", true))
+	} else {
+		checks = append(checks, setupCheck("build-tools", "Verify Git, CMake, and compiler", "Missing "+strings.Join(missingTools, ", ")+". The guided setup can use a supported distro package manager when you choose it.", false))
+	}
+
+	if tailscalePath, err := exec.LookPath("tailscale"); err != nil {
+		checks = append(checks, setupCheck("tailscale-ip", "Verify the local Tailscale IPv4 address", "Tailscale is not available.", false))
+	} else if output, err := exec.Command(tailscalePath, "ip", "-4").Output(); err != nil || strings.TrimSpace(string(output)) == "" {
+		checks = append(checks, setupCheck("tailscale-ip", "Verify the local Tailscale IPv4 address", "Tailscale has no configured local IPv4 address.", false))
+	} else {
+		checks = append(checks, setupCheck("tailscale-ip", "Verify the local Tailscale IPv4 address", "Configured local Tailscale IPv4: "+strings.TrimSpace(string(output))+".", true))
+	}
+
+	for _, port := range []int{agentPort, 50053} {
+		title := fmt.Sprintf("Verify TCP %d is available", port)
+		if err := verifyTCPPortAvailable(port); err != nil {
+			checks = append(checks, setupCheck(fmt.Sprintf("port-%d", port), title, err.Error(), false))
+		} else {
+			checks = append(checks, setupCheck(fmt.Sprintf("port-%d", port), title, "No existing listener was found.", true))
+		}
+	}
+	return checks
+}
+
+// verifyTCPPortAvailable briefly asks the local kernel to reserve the selected
+// port and immediately releases it. No listener remains and no network packet
+// is sent; this is more reliable than assuming the optional ss utility exists.
+func verifyTCPPortAvailable(port int) error {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return fmt.Errorf("TCP %d is already unavailable: %w", port, err)
+	}
+	return listener.Close()
+}
+
 func setupCheck(id, title, detail string, finished bool) AgentSetupCheck {
 	status := "not-started"
 	if finished {
@@ -260,13 +347,21 @@ func validateBootstrapReport(path string) (bool, string) {
 	return true, "The audited GPU setup report is present and records " + report.Hostname + "."
 }
 
-// StartProvisioning invokes the existing audited PowerShell provisioner with
-// elevation. The script is intentionally responsible for installations,
-// firewall changes and config writes; the UI does not reproduce that logic.
+// StartProvisioning invokes the audited, platform-specific local provisioner.
+// The script is intentionally responsible for installations and config writes;
+// the UI only launches it and presents its durable progress and log records.
 func (a *AgentApp) StartProvisioning() error {
-	if runtime.GOOS != "windows" {
-		return fmt.Errorf("automatic GPU-node provisioning is currently available on Windows only")
+	switch runtime.GOOS {
+	case "windows":
+		return a.startWindowsProvisioning()
+	case "linux":
+		return a.startLinuxProvisioning()
+	default:
+		return fmt.Errorf("automatic GPU-node provisioning is currently available on Windows and Linux")
 	}
+}
+
+func (a *AgentApp) startWindowsProvisioning() error {
 	a.mu.Lock()
 	if a.provisioning {
 		a.mu.Unlock()
@@ -293,6 +388,42 @@ func (a *AgentApp) StartProvisioning() error {
 	a.cancelPath = cancelPath
 	a.mu.Unlock()
 	go a.runWindowsProvisioner(script, agentPath, llamaPath, progressPath, cancelPath)
+	return nil
+}
+
+func (a *AgentApp) startLinuxProvisioning() error {
+	a.mu.Lock()
+	if a.provisioning {
+		a.mu.Unlock()
+		return fmt.Errorf("local setup is already running")
+	}
+	a.mu.Unlock()
+	script, err := prepareLinuxProvisioner()
+	if err != nil {
+		return err
+	}
+	installRoot := filepath.Dir(script)
+	progressPath := filepath.Join(installRoot, "setup-progress.json")
+	cancelPath := filepath.Join(installRoot, "setup-cancel.request")
+	logPath := filepath.Join(installRoot, "setup.log")
+	if err := os.Remove(cancelPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("clearing a previous setup cancellation request: %w", err)
+	}
+	if err := writeSetupProgress(progressPath, setupProgress{Step: "requirements", Detail: "Preparing the audited Linux setup."}); err != nil {
+		return err
+	}
+	if err := os.WriteFile(logPath, []byte("Tether Linux setup started. Full output will remain in this file.\n"), 0600); err != nil {
+		return fmt.Errorf("creating persistent Linux setup log: %w", err)
+	}
+	a.mu.Lock()
+	a.provisioning = true
+	a.provisioningError = ""
+	a.provisioningDetail = "Starting the audited Linux setup. Its current stage and persistent log appear below."
+	a.progressPath = progressPath
+	a.cancelPath = cancelPath
+	a.logPath = logPath
+	a.mu.Unlock()
+	go a.runLinuxProvisioner(script, progressPath, cancelPath, logPath)
 	return nil
 }
 
@@ -332,6 +463,39 @@ func (a *AgentApp) runWindowsProvisioner(script, agentPath, llamaPath, progressP
 	}
 }
 
+func (a *AgentApp) runLinuxProvisioner(script, progressPath, cancelPath, logPath string) {
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
+	if err == nil {
+		defer logFile.Close()
+		command := exec.Command("bash", script, "--provision", "--install-missing", "--progress-path", progressPath, "--cancel-path", cancelPath)
+		command.Stdout = logFile
+		command.Stderr = logFile
+		err = command.Run()
+	}
+	a.mu.Lock()
+	a.provisioning = false
+	a.cancelPath = ""
+	if err != nil {
+		progress := readSetupProgress(progressPath)
+		if progress.Step == "failed" && progress.Detail != "" {
+			a.provisioningError = "Linux setup stopped: " + progress.Detail
+		} else if progress.Step == "cancelled" && progress.Detail != "" {
+			a.provisioningError = "Linux setup was cancelled: " + progress.Detail
+		} else {
+			a.provisioningError = "Linux setup did not complete: " + err.Error()
+		}
+		a.provisioningDetail = "Setup stopped. Read the persistent log below, correct the issue, then run setup again."
+	} else {
+		a.provisioningDetail = "Local Linux setup completed. Rechecking this machine now."
+	}
+	a.mu.Unlock()
+	if err == nil {
+		if state, stateErr := a.State(); stateErr == nil && state.Ready {
+			_ = a.StartService()
+		}
+	}
+}
+
 type setupProgress struct {
 	Step   string `json:"step"`
 	Detail string `json:"detail"`
@@ -353,6 +517,14 @@ func defaultSetupProgressPath() string {
 	return filepath.Join(cacheRoot, "tether", "setup-progress.json")
 }
 
+func defaultSetupLogPath() string {
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(cacheRoot, "tether", "setup.log")
+}
+
 func readSetupProgress(path string) setupProgress {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -365,6 +537,18 @@ func readSetupProgress(path string) setupProgress {
 	return progress
 }
 
+func readSetupLogTail(path string) string {
+	const maxBytes = 12 * 1024
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	if len(data) > maxBytes {
+		data = append([]byte("… earlier setup output omitted …\n"), data[len(data)-maxBytes:]...)
+	}
+	return string(data)
+}
+
 func applySetupProgress(checks []AgentSetupCheck, progress setupProgress) {
 	if progress.Step == "" {
 		return
@@ -373,6 +557,7 @@ func applySetupProgress(checks []AgentSetupCheck, progress setupProgress) {
 		"requirements":  "local-setup",
 		"tailscale":     "tailscale",
 		"rpc-server":    "rpc-server",
+		"firewall":      "local-setup",
 		"configuration": "local-setup",
 	}[progress.Step]
 	if activeCheck == "" {
@@ -570,6 +755,26 @@ func prepareWindowsProvisioner() (scriptPath, agentPath, llamaPath string, err e
 		return "", "", "", fmt.Errorf("writing local setup script: %w", err)
 	}
 	return scriptPath, agentPath, filepath.Join(installRoot, "llama.cpp"), nil
+}
+
+// prepareLinuxProvisioner keeps the reviewed script in a private user cache
+// directory. Unlike the Windows path it does not copy or install the Agent:
+// Linux package ownership remains with the user and the script only builds its
+// local llama.cpp checkout plus the Agent's local configuration/report.
+func prepareLinuxProvisioner() (string, error) {
+	installRoot, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("locating local setup directory: %w", err)
+	}
+	installRoot = filepath.Join(installRoot, "tether")
+	if err := os.MkdirAll(installRoot, 0700); err != nil {
+		return "", fmt.Errorf("creating local setup directory: %w", err)
+	}
+	scriptPath := filepath.Join(installRoot, "bootstrap-linux-node.sh")
+	if err := os.WriteFile(scriptPath, bootstrapassets.LinuxNodeBootstrap, 0700); err != nil {
+		return "", fmt.Errorf("writing local Linux setup script: %w", err)
+	}
+	return scriptPath, nil
 }
 
 func powerShellLiteral(value string) string {

@@ -50,6 +50,9 @@ function updatePanels(state) {
   document.querySelector('#pair-panel').hidden = state.ready || !localSetupComplete || state.paired;
   document.querySelector('#provision').disabled = state.provisioning;
   document.querySelector('#provision').textContent = state.provisioning ? 'Local setup is running…' : 'Run audited local setup';
+  document.querySelector('#setup-description').textContent = state.platform === 'linux'
+    ? 'The audited Linux setup repeats this read-only preflight, builds the pinned llama.cpp CUDA RPC server, writes only local Agent configuration and a capability report, and records every stage in a persistent log. It never pairs this node or changes firewall rules automatically.'
+    : 'The audited Windows script checks prerequisites, handles Tailscale sign-in when needed, builds the pinned llama.cpp CUDA RPC server, adds Tailnet-only firewall rules, and writes the local Agent configuration.';
 
   const finishSetup = document.querySelector('#finish-setup');
   finishSetup.hidden = localSetupComplete || !state.canProvision;
@@ -62,6 +65,12 @@ function updatePanels(state) {
   document.querySelector('#code-panel').hidden = !state.pairingActive;
   document.querySelector('#pair-code').textContent = state.pairingCode || '';
   document.querySelector('#service-note').textContent = state.serviceDetail || 'The Agent will listen for commands from the paired Orchestrator.';
+
+  const logPanel = document.querySelector('#setup-log-panel');
+  const log = state.provisioningLog || '';
+  logPanel.hidden = !log;
+  document.querySelector('#setup-log').textContent = log;
+  document.querySelector('#setup-log-path').textContent = state.provisioningLogPath || '';
 }
 
 async function refresh() {

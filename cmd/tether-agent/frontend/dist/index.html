@@ -29,7 +29,7 @@
       <div class="action-stack reveal">
         <section id="setup-panel" class="action-panel" hidden>
           <div><p class="eyebrow">Guided local setup</p><h2>Set up this GPU node</h2></div>
-          <p>The audited Windows script checks prerequisites, handles Tailscale sign-in when needed, builds the pinned llama.cpp CUDA RPC server, adds Tailnet-only firewall rules, and writes the local Agent configuration.</p>
+          <p id="setup-description">The audited local setup checks prerequisites, builds the pinned llama.cpp CUDA RPC server, writes only local Agent configuration and a capability report, and keeps pairing as a separate explicit step.</p>
           <button id="provision">Run audited local setup</button>
         </section>
 
@@ -44,6 +44,11 @@
           <button id="open-pair">Open pairing window</button>
         </section>
       </div>
+
+      <section id="setup-log-panel" class="setup-log-panel reveal" hidden aria-labelledby="setup-log-heading">
+        <div class="section-heading compact"><div><p class="eyebrow">Persistent setup log</p><h2 id="setup-log-heading">Live local setup output</h2></div><p id="setup-log-path"></p></div>
+        <pre id="setup-log" aria-live="polite"></pre>
+      </section>
 
       <section class="checklist-panel reveal" aria-labelledby="checklist-heading">
         <div class="section-heading">

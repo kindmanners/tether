@@ -92,7 +92,10 @@ button.secondary:hover { border-color: var(--blue); color: var(--blue); }
 .action-panel.ready::before { background: var(--white); }
 .action-panel.ready .eyebrow, .action-panel.ready p { color: var(--white); }
 
-.checklist-panel, .panel, .code-panel { border-bottom: 1px solid var(--ink); }
+.checklist-panel, .panel, .code-panel, .setup-log-panel { border-bottom: 1px solid var(--ink); }
+.setup-log-panel { margin-top: 34px; padding-top: 34px; }
+.setup-log-panel .section-heading > p { max-width: 360px; font-family: "SFMono-Regular", Consolas, monospace; font-size: .68rem; text-align: right; word-break: break-word; }
+.setup-log-panel pre { max-height: 340px; margin: 0; padding: 18px 0; overflow: auto; background: #101114; color: #e9edff; font: .72rem/1.55 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 .checklist-panel { margin-top: 70px; }
 .section-heading { align-items: flex-end; padding-bottom: 17px; border-bottom: 1px solid var(--ink); }
 .section-heading.compact { padding: 0 0 17px; }
@@ -174,6 +177,8 @@ body.is-refreshing #refresh::after { content: ""; position: absolute; left: 0; r
   .action-panel button { grid-column: auto; justify-self: stretch; }
   .action-panel.ready { margin: 0 -17px; padding: 27px 17px; }
   .checklist-panel { margin-top: 48px; }
+
+  .setup-log-panel .section-heading > p { text-align: left; }
   .section-heading { align-items: flex-start; }
   .progress-summary { text-align: left; }
   .check { grid-template-columns: 36px minmax(0, 1fr); gap: 10px; }
