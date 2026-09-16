@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,9 +14,11 @@ import (
 	"tether/internal/agent"
 	"tether/internal/certs"
 	"tether/internal/executil"
+	"tether/internal/orchestratorconfig"
 	"tether/internal/pairing"
 	"tether/internal/registry"
 	"tether/internal/trust"
+	bootstrapassets "tether/scripts"
 
 	"gopkg.in/yaml.v3"
 )
@@ -25,16 +28,23 @@ import (
 // set of actions rather than a general remote-command facility.
 type OrchestratorApp struct {
 	allowlistPath string
+	configPath    string
 	mu            sync.Mutex
 	gateway       *exec.Cmd
+	preparing     bool
+	prepareDetail string
+	prepareLog    string
+	progressPath  string
 }
 
 const defaultAgentPort = 7420
 
 type OrchestratorSnapshot struct {
-	AllowlistPath string        `json:"allowlistPath"`
-	Nodes         []DesktopNode `json:"nodes"`
-	Gateway       GatewayState  `json:"gateway"`
+	AllowlistPath      string        `json:"allowlistPath"`
+	ContributeLocalGPU bool          `json:"contributeLocalGPU"`
+	Backend            BackendState  `json:"backend"`
+	Nodes              []DesktopNode `json:"nodes"`
+	Gateway            GatewayState  `json:"gateway"`
 }
 
 type DesktopNode struct {
@@ -54,13 +64,30 @@ type GatewayState struct {
 	Endpoint  string `json:"endpoint"`
 }
 
+// BackendState is the local llama.cpp prerequisite for serving models. It is
+// separate from Agent state: an Orchestrator always needs an RPC-enabled
+// llama-server, while CUDA is only built when this machine contributes GPU.
+type BackendState struct {
+	Ready     bool   `json:"ready"`
+	Preparing bool   `json:"preparing"`
+	Detail    string `json:"detail"`
+	LogPath   string `json:"logPath"`
+}
+
 type TailnetCandidate struct {
 	Hostname string `json:"hostname"`
 	Address  string `json:"address"`
 }
 
 func NewOrchestratorApp(allowlistPath string) *OrchestratorApp {
-	return &OrchestratorApp{allowlistPath: allowlistPath}
+	configPath, err := orchestratorconfig.DefaultPath()
+	if err != nil {
+		// Snapshot and StartGateway return a readable error if this unusual
+		// platform failure persists; retaining an empty path avoids panicking
+		// while Wails is starting.
+		configPath = ""
+	}
+	return &OrchestratorApp{allowlistPath: allowlistPath, configPath: configPath}
 }
 
 func (a *OrchestratorApp) startup(context.Context) {
@@ -68,7 +95,12 @@ func (a *OrchestratorApp) startup(context.Context) {
 	// it opportunistically so double-clicking Tether makes the standard local
 	// OpenAI endpoint available without a separate terminal command. Any
 	// missing inference prerequisite remains visible in the UI.
-	go func() { _ = a.StartGateway() }()
+	go func() {
+		config, err := a.orchestratorConfig()
+		if err == nil && a.localBackendState(config).Ready {
+			_ = a.StartGateway()
+		}
+	}()
 }
 
 func (a *OrchestratorApp) shutdown(context.Context) {
@@ -82,6 +114,10 @@ func (a *OrchestratorApp) shutdown(context.Context) {
 // Snapshot refreshes the live Tailscale registry and, for paired online
 // nodes, reads the Agent's current RPC process state over pinned mTLS.
 func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
+	config, err := a.orchestratorConfig()
+	if err != nil {
+		return nil, err
+	}
 	allowlist, err := registry.LoadAllowlist(a.allowlistPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading node allowlist: %w", err)
@@ -139,10 +175,83 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 	}
 
 	return &OrchestratorSnapshot{
-		AllowlistPath: a.allowlistPath,
-		Nodes:         view,
-		Gateway:       a.gatewayState(),
+		AllowlistPath:      a.allowlistPath,
+		ContributeLocalGPU: config.ContributeLocalGPU,
+		Backend:            a.localBackendState(config),
+		Nodes:              view,
+		Gateway:            a.gatewayState(),
 	}, nil
+}
+
+// SetLocalGPUContribution records whether this Orchestrator should use its
+// own CUDA backend for placement. The gateway is restarted when Tether owns
+// it, because a running llama-server worker cannot safely change placement.
+func (a *OrchestratorApp) SetLocalGPUContribution(enabled bool) error {
+	if a.configPath == "" {
+		return fmt.Errorf("locating the local Orchestrator config is unavailable on this machine")
+	}
+	config, err := a.orchestratorConfig()
+	if err != nil {
+		return err
+	}
+	config.ContributeLocalGPU = enabled
+	if err := orchestratorconfig.Save(a.configPath, config); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	wasRunning := a.gateway != nil && a.gateway.Process != nil
+	if wasRunning {
+		_ = a.gateway.Process.Kill()
+		a.gateway = nil
+	}
+	a.mu.Unlock()
+	if wasRunning {
+		if err := a.StartGateway(); err != nil {
+			return fmt.Errorf("restarting the gateway with the new GPU setting: %w", err)
+		}
+	}
+	return nil
+}
+
+// PrepareLocalBackend runs the reviewed, local Linux build. It creates only
+// the user's llama.cpp checkout and Orchestrator preference; it never turns
+// this control host into an Agent or changes Tailscale/firewall state.
+func (a *OrchestratorApp) PrepareLocalBackend() error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("automatic Orchestrator backend setup is currently available on Linux")
+	}
+	config, err := a.orchestratorConfig()
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	if a.preparing {
+		a.mu.Unlock()
+		return fmt.Errorf("local backend setup is already running")
+	}
+	a.mu.Unlock()
+
+	script, root, err := prepareLinuxOrchestratorProvisioner()
+	if err != nil {
+		return err
+	}
+	progressPath := filepath.Join(root, "orchestrator-setup-progress.json")
+	logPath := filepath.Join(root, "orchestrator-setup.log")
+	if err := os.WriteFile(logPath, []byte("Tether Orchestrator backend setup started. Full output will remain in this file.\n"), 0600); err != nil {
+		return fmt.Errorf("creating Orchestrator setup log: %w", err)
+	}
+	if err := writeBackendProgress(progressPath, backendProgress{Step: "requirements", Detail: "Preparing the audited local backend setup."}); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.preparing = true
+	a.prepareDetail = "Preparing the local inference backend. Progress is saved in the setup log."
+	a.prepareLog = logPath
+	a.progressPath = progressPath
+	a.mu.Unlock()
+	go a.runLinuxOrchestratorProvisioner(script, progressPath, logPath, config.ContributeLocalGPU)
+	return nil
 }
 
 // Pair validates the selected live node before making the one-time pairing
@@ -280,7 +389,19 @@ func (a *OrchestratorApp) StartGateway() error {
 	if err != nil {
 		return err
 	}
-	command := exec.Command(path, "--rpc", "auto")
+	config, err := a.orchestratorConfig()
+	if err != nil {
+		return err
+	}
+	llamaServer, err := a.localLlamaServer(config)
+	if err != nil {
+		return err
+	}
+	arguments := []string{"--rpc", "auto", "--llama-server", llamaServer}
+	if !config.ContributeLocalGPU {
+		arguments = append(arguments, "--local-gpu=false")
+	}
+	command := exec.Command(path, arguments...)
 	executil.HideWindow(command)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("starting local gateway: %w", err)
@@ -295,6 +416,13 @@ func (a *OrchestratorApp) StartGateway() error {
 		a.mu.Unlock()
 	}()
 	return nil
+}
+
+func (a *OrchestratorApp) orchestratorConfig() (orchestratorconfig.Config, error) {
+	if a.configPath == "" {
+		return orchestratorconfig.Config{}, fmt.Errorf("locating the local Orchestrator config is unavailable on this machine")
+	}
+	return orchestratorconfig.Load(a.configPath)
 }
 
 func (a *OrchestratorApp) gatewayState() GatewayState {
@@ -314,6 +442,153 @@ func (a *OrchestratorApp) gatewayState() GatewayState {
 		state.Detail = "Ready to start " + filepath.Base(path) + "."
 	}
 	return state
+}
+
+func (a *OrchestratorApp) localBackendState(config orchestratorconfig.Config) BackendState {
+	a.mu.Lock()
+	preparing, detail, logPath, progressPath := a.preparing, a.prepareDetail, a.prepareLog, a.progressPath
+	a.mu.Unlock()
+	if preparing {
+		if progress := readBackendProgress(progressPath); progress.Detail != "" {
+			detail = progress.Detail
+		}
+		return BackendState{Preparing: true, Detail: detail, LogPath: logPath}
+	}
+	server, err := a.localLlamaServer(config)
+	if err != nil {
+		if detail != "" {
+			return BackendState{Detail: detail, LogPath: logPath}
+		}
+		return BackendState{Detail: err.Error(), LogPath: logPath}
+	}
+	if config.ContributeLocalGPU {
+		return BackendState{Ready: true, Detail: "CUDA and RPC local inference backend is ready: " + server, LogPath: logPath}
+	}
+	return BackendState{Ready: true, Detail: "RPC control-only inference backend is ready: " + server, LogPath: logPath}
+}
+
+func (a *OrchestratorApp) localLlamaServer(config orchestratorconfig.Config) (string, error) {
+	candidates := make([]string, 0, 2)
+	if config.LlamaServerPath != "" && config.LlamaServerLocalGPU == config.ContributeLocalGPU {
+		candidates = append(candidates, config.LlamaServerPath)
+	}
+	if config.ContributeLocalGPU {
+		candidates = append(candidates, filepath.Join("llama.cpp", "build-rpc-cuda", "bin", executableName("llama-server")))
+	} else {
+		candidates = append(candidates, filepath.Join("llama.cpp", "build-rpc", "bin", executableName("llama-server")))
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	mode := "RPC control-only"
+	if config.ContributeLocalGPU {
+		mode = "CUDA and RPC"
+	}
+	return "", fmt.Errorf("local %s inference backend is not prepared; choose Prepare local backend", mode)
+}
+
+func executableName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
+
+type backendProgress struct {
+	Step   string `json:"step"`
+	Detail string `json:"detail"`
+}
+
+func writeBackendProgress(path string, progress backendProgress) error {
+	data, err := json.Marshal(progress)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+func readBackendProgress(path string) backendProgress {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return backendProgress{}
+	}
+	var progress backendProgress
+	if json.Unmarshal(data, &progress) != nil {
+		return backendProgress{}
+	}
+	return progress
+}
+
+func prepareLinuxOrchestratorProvisioner() (string, string, error) {
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		return "", "", fmt.Errorf("locating local setup directory: %w", err)
+	}
+	root := filepath.Join(cacheRoot, "tether")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return "", "", fmt.Errorf("creating local setup directory: %w", err)
+	}
+	script := filepath.Join(root, "bootstrap-linux-orchestrator.sh")
+	if err := os.WriteFile(script, bootstrapassets.LinuxOrchestratorBootstrap, 0700); err != nil {
+		return "", "", fmt.Errorf("writing local Orchestrator setup script: %w", err)
+	}
+	return script, root, nil
+}
+
+func (a *OrchestratorApp) runLinuxOrchestratorProvisioner(script, progressPath, logPath string, contributeGPU bool) {
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
+	if err == nil {
+		defer logFile.Close()
+		arguments := []string{script, "--install-missing", "--progress-path", progressPath}
+		if contributeGPU {
+			arguments = append(arguments, "--local-gpu")
+		}
+		command := exec.Command("bash", arguments...)
+		command.Stdout, command.Stderr = logFile, logFile
+		err = command.Run()
+	}
+	a.mu.Lock()
+	a.preparing = false
+	if err != nil {
+		progress := readBackendProgress(progressPath)
+		if progress.Detail != "" {
+			a.prepareDetail = "Local backend setup stopped: " + progress.Detail
+		} else {
+			a.prepareDetail = "Local backend setup did not complete: " + err.Error()
+		}
+		a.mu.Unlock()
+		return
+	}
+	a.prepareDetail = "Local inference backend is ready."
+	a.mu.Unlock()
+
+	config, configErr := a.orchestratorConfig()
+	if configErr != nil {
+		return
+	}
+	config.LlamaServerPath = defaultLinuxLlamaServerPath(contributeGPU)
+	config.LlamaServerLocalGPU = contributeGPU
+	if configErr = orchestratorconfig.Save(a.configPath, config); configErr == nil {
+		_ = a.StartGateway()
+	}
+}
+
+func defaultLinuxLlamaServerPath(contributeGPU bool) string {
+	dataRoot := os.Getenv("XDG_DATA_HOME")
+	if dataRoot == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return ""
+		}
+		dataRoot = filepath.Join(home, ".local", "share")
+	}
+	build := "build-rpc"
+	if contributeGPU {
+		build = "build-rpc-cuda"
+	}
+	return filepath.Join(dataRoot, "tether", "llama.cpp", build, "bin", "llama-server")
 }
 
 func (a *OrchestratorApp) onlineNode(hostname string) (*registry.Node, *certs.Identity, error) {

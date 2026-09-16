@@ -33,6 +33,17 @@
           <p class="eyebrow">Local inference endpoint</p>
           <h2 id="gateway-heading"><strong id="gateway-state">Checking gateway…</strong></h2>
           <p id="gateway-detail">Reading the local gateway state.</p>
+          <div class="local-gpu-control" aria-live="polite">
+            <div>
+              <p class="eyebrow">This Orchestrator</p>
+              <strong id="contribution-state">Checking local GPU role…</strong>
+              <p id="contribution-detail">Reading the local backend state.</p>
+            </div>
+            <div class="local-gpu-actions">
+              <button id="toggle-local-gpu" class="secondary" aria-pressed="true">Use control-only mode</button>
+              <button id="prepare-backend" class="secondary">Prepare local backend</button>
+            </div>
+          </div>
         </div>
         <div class="gateway-actions">
           <code id="gateway-endpoint">http://127.0.0.1:11435/v1</code>

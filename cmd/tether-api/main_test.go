@@ -36,6 +36,19 @@ func TestResolveRPCEndpointsLocalOnly(t *testing.T) {
 	}
 }
 
+func TestLocalOnlyPlacementRejectsOptedOutOrchestrator(t *testing.T) {
+	model := filepath.Join(t.TempDir(), "model.gguf")
+	if err := os.WriteFile(model, []byte("GGUF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gateway := &gateway{cfg: gatewayConfig{
+		rpcMode: "none", modelOverhead: 1, ctxSize: 1, kvBytesPerToken: 0, localGPU: false,
+	}}
+	if _, err := gateway.planFor(model); err == nil {
+		t.Fatal("local-only placement succeeded after the Orchestrator opted out of local GPU contribution")
+	}
+}
+
 func TestResolveRPCEndpointsRejectsBadEndpoint(t *testing.T) {
 	if _, err := resolveRPCEndpoints("not-an-endpoint", "unused"); err == nil {
 		t.Fatal("resolveRPCEndpoints succeeded for an invalid endpoint")

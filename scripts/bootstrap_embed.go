@@ -17,3 +17,11 @@ var WindowsNodeBootstrap []byte
 //
 //go:embed bootstrap-linux-node.sh
 var LinuxNodeBootstrap []byte
+
+// LinuxOrchestratorBootstrap builds the local llama-server that a Tether
+// Orchestrator uses to host models and connect to paired Agent RPC servers.
+// It is separate from GPU-node setup: it never writes Agent configuration,
+// opens ports, or participates in pairing.
+//
+//go:embed bootstrap-linux-orchestrator.sh
+var LinuxOrchestratorBootstrap []byte

@@ -4,6 +4,7 @@ const notice = document.querySelector('#notice');
 const dialog = document.querySelector('#pair-dialog');
 const addDialog = document.querySelector('#add-dialog');
 let pairingHost = '';
+let preparationRefresh;
 
 function report(message, error = false) {
   notice.textContent = message || '';
@@ -23,8 +24,9 @@ function stateClass(value) {
 async function refresh() {
   report('Refreshing live node state…');
   document.body.classList.add('is-refreshing');
+  let state;
   try {
-    const state = await api().Snapshot();
+    state = await api().Snapshot();
     const onlineCount = state.nodes.filter(node => node.tailnet === 'Online').length;
     const pairedCount = state.nodes.filter(node => node.paired).length;
     document.querySelector('#allowlist').textContent = state.allowlistPath ? `Allowlist: ${state.allowlistPath}` : '';
@@ -38,7 +40,18 @@ async function refresh() {
     document.querySelector('#gateway-state').textContent = state.gateway.running ? 'Gateway running' : 'Gateway stopped';
     document.querySelector('#gateway-detail').textContent = state.gateway.detail;
     document.querySelector('#gateway-endpoint').textContent = state.gateway.endpoint;
-    document.querySelector('#start-gateway').disabled = state.gateway.running || !state.gateway.available;
+    document.querySelector('#start-gateway').disabled = state.gateway.running || !state.gateway.available || !state.backend.ready;
+    const contributing = state.contributeLocalGPU;
+    const toggle = document.querySelector('#toggle-local-gpu');
+    const prepare = document.querySelector('#prepare-backend');
+    document.querySelector('#contribution-state').textContent = contributing ? 'Contributing this machine’s GPU' : 'Control-only mode';
+    document.querySelector('#contribution-detail').textContent = state.backend.detail || 'Local backend state is not available.';
+    toggle.textContent = contributing ? 'Use control-only mode' : 'Contribute this GPU';
+    toggle.setAttribute('aria-pressed', String(contributing));
+    toggle.disabled = state.backend.preparing;
+    prepare.textContent = state.backend.preparing ? 'Preparing local backend…' : state.backend.ready ? 'Rebuild local backend' : contributing ? 'Prepare CUDA backend' : 'Prepare RPC backend';
+    prepare.disabled = state.backend.preparing;
+    document.querySelector('.gateway').classList.toggle('is-control-only', !contributing);
 
     nodes.innerHTML = state.nodes.length ? state.nodes.map((node, index) => `
       <article class="node-card" style="--index:${index}" data-state="${stateClass(node.tailnet)}">
@@ -63,6 +76,8 @@ async function refresh() {
     report(error.message || String(error), true);
   } finally {
     document.body.classList.remove('is-refreshing');
+    window.clearTimeout(preparationRefresh);
+    if (state?.backend?.preparing) preparationRefresh = window.setTimeout(refresh, 2000);
   }
 }
 
@@ -122,6 +137,20 @@ document.querySelector('#refresh').addEventListener('click', refresh);
 document.querySelector('#start-gateway').addEventListener('click', async () => {
   try {
     await api().StartGateway();
+    await refresh();
+  } catch (error) { report(error.message || String(error), true); }
+});
+document.querySelector('#toggle-local-gpu').addEventListener('click', async () => {
+  try {
+    const enabled = document.querySelector('#toggle-local-gpu').getAttribute('aria-pressed') !== 'true';
+    report('Updating this Orchestrator’s GPU role…');
+    await api().SetLocalGPUContribution(enabled);
+    await refresh();
+  } catch (error) { report(error.message || String(error), true); }
+});
+document.querySelector('#prepare-backend').addEventListener('click', async () => {
+  try {
+    await api().PrepareLocalBackend();
     await refresh();
   } catch (error) { report(error.message || String(error), true); }
 });

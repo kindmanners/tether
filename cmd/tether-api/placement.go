@@ -28,6 +28,9 @@ func (g *gateway) planFor(modelPath string) (placement.Plan, error) {
 	requirement := placement.Requirement{ModelBytes: modelBytes, KVCacheBytes: int64(g.cfg.ctxSize) * g.cfg.kvBytesPerToken}
 	switch strings.ToLower(strings.TrimSpace(g.cfg.rpcMode)) {
 	case "", "none":
+		if !g.cfg.localGPU {
+			return placement.Plan{}, fmt.Errorf("local-only placement is disabled because this Orchestrator is not contributing a GPU")
+		}
 		return placement.Plan{Mode: "local", Nodes: []placement.Node{{Hostname: "orchestrator", Local: true}}, Requirement: requirement}, nil
 	case "auto":
 		nodes, err := discoverPlacementNodes(g.cfg.allowlistPath, g.cfg.localGPU)

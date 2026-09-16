@@ -37,12 +37,10 @@ func main() {
 
 	defaultLlamaServer := "llama.cpp/build-rpc/bin/llama-server"
 	cudaLlamaServer := "llama.cpp/build-rpc-cuda/bin/llama-server"
-	if info, err := os.Stat(cudaLlamaServer); err == nil && !info.IsDir() {
-		defaultLlamaServer = cudaLlamaServer
-	}
 	listen := flag.String("listen", "127.0.0.1:11435", "OpenAI API address (host:port)")
 	modelsDir := flag.String("models-dir", defaultModelsDir, "directory containing GGUF models")
-	llamaServer := flag.String("llama-server", defaultLlamaServer, "path to llama.cpp llama-server")
+	llamaServer := flag.String("llama-server", "", "path to llama.cpp llama-server")
+	localGPURequested := flag.Bool("local-gpu", true, "allow this Orchestrator to contribute its local CUDA GPU")
 	rpc := flag.String("rpc", "auto", "comma-separated RPC endpoints, auto, or none")
 	allowlistPath := flag.String("allowlist", "node_allowlist.yaml", "path to Tether node allowlist for --rpc auto")
 	apiKey := flag.String("api-key", "", "API key required by non-local clients")
@@ -53,6 +51,14 @@ func main() {
 	modelOverhead := flag.Float64("model-overhead", 1.15, "multiply GGUF file size by this runtime memory reserve")
 	kvBytesPerToken := flag.Int64("kv-cache-bytes-per-token", 256*1024, "conservative KV-cache VRAM reserve per context token")
 	flag.Parse()
+	if *llamaServer == "" {
+		if *localGPURequested {
+			if info, err := os.Stat(cudaLlamaServer); err == nil && !info.IsDir() {
+				defaultLlamaServer = cudaLlamaServer
+			}
+		}
+		*llamaServer = defaultLlamaServer
+	}
 
 	host, port, err := net.SplitHostPort(*listen)
 	if err != nil || host == "" || port == "" {
@@ -70,9 +76,13 @@ func main() {
 	if info, err := os.Stat(*llamaServer); err != nil || info.IsDir() {
 		log.Fatalf("llama-server at %q is unavailable: %v", *llamaServer, err)
 	}
-	localGPU, err := llamaServerHasCUDA(*llamaServer)
-	if err != nil {
-		log.Fatalf("checking local llama-server CUDA backend: %v", err)
+	localGPU := false
+	if *localGPURequested {
+		var err error
+		localGPU, err = llamaServerHasCUDA(*llamaServer)
+		if err != nil {
+			log.Fatalf("checking local llama-server CUDA backend: %v", err)
+		}
 	}
 
 	gateway, err := newGateway(gatewayConfig{
@@ -96,7 +106,9 @@ func main() {
 	if strings.EqualFold(*rpc, "auto") {
 		log.Printf("RPC placement: whole-model GPU when it fits; RPC mesh only when required")
 	}
-	if !localGPU {
+	if !*localGPURequested {
+		log.Printf("Local GPU contribution disabled by Orchestrator preference")
+	} else if !localGPU {
 		log.Printf("Local GPU placement disabled: %s does not expose a CUDA backend", *llamaServer)
 	}
 
