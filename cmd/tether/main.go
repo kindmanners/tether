@@ -146,6 +146,14 @@ func startRPCServer(stdin *bufio.Scanner, output io.Writer, client commandClient
 	if err != nil {
 		return err
 	}
+	current, err := client.GetStatus(addr)
+	if err != nil {
+		return fmt.Errorf("checking current RPC status: %w", err)
+	}
+	if current.Status == "Running" {
+		fmt.Fprintln(output, "RPC server is already running; start was not sent.")
+		return nil
+	}
 
 	status, err := client.StartRPCServer(addr, port)
 	if err != nil {

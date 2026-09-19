@@ -42,6 +42,7 @@ func TestControlNodeSendsStatusStartAndStop(t *testing.T) {
 
 	wantCalls := []string{
 		"status 100.64.0.1:7420",
+		"status 100.64.0.1:7420",
 		"start 100.64.0.1:7420 50052",
 		"stop 100.64.0.1:7420",
 	}
@@ -53,6 +54,31 @@ func TestControlNodeSendsStatusStartAndStop(t *testing.T) {
 			t.Errorf("output did not contain %q:\n%s", want, output.String())
 		}
 	}
+}
+
+func TestStartRPCServerSkipsStartWhenAlreadyRunning(t *testing.T) {
+	client := &fakeCommandClient{}
+	clientStatus := &runningCommandClient{fakeCommandClient: client}
+	node := &registry.Node{Hostname: "node-alpha", RPCPort: 50052}
+	input := bufio.NewScanner(strings.NewReader("\n"))
+	var output bytes.Buffer
+
+	if err := startRPCServer(input, &output, clientStatus, node, "100.64.0.1:7420"); err != nil {
+		t.Fatalf("startRPCServer returned an error: %v", err)
+	}
+	if got := strings.Join(client.calls, "\n"); got != "status 100.64.0.1:7420" {
+		t.Errorf("calls = %q, want only a status check", got)
+	}
+	if !strings.Contains(output.String(), "already running") {
+		t.Errorf("output did not explain the skipped start: %s", output.String())
+	}
+}
+
+type runningCommandClient struct{ *fakeCommandClient }
+
+func (c *runningCommandClient) GetStatus(addr string) (*agent.StatusResult, error) {
+	c.calls = append(c.calls, "status "+addr)
+	return &agent.StatusResult{Status: "Running"}, nil
 }
 
 func TestControlNodeRejectsInvalidPortBeforeSendingStart(t *testing.T) {

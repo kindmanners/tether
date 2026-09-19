@@ -14,16 +14,13 @@
         <a class="wordmark" href="#top" aria-label="Tether Orchestrator home">Tether</a>
         <p>Orchestrator</p>
         <p class="utility-status"><span></span><span id="node-count">Checking nodes</span></p>
+		<button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span aria-hidden="true">◐</span><span class="theme-label">Dark</span></button>
       </div>
 
       <header id="top" class="masthead reveal">
         <div class="masthead-copy">
           <p class="eyebrow">Distributed inference control</p>
-          <h1>Bring every GPU into one workspace.</h1>
-        </div>
-        <div class="header-actions">
-          <button id="add-node" class="secondary">Add Tailnet node</button>
-          <button id="refresh" class="secondary">Refresh nodes</button>
+          <h1 id="workspace-headline">Bring every GPU into one workspace.</h1>
         </div>
       </header>
 
@@ -60,7 +57,10 @@
       <section class="nodes-section reveal" aria-labelledby="nodes-heading">
         <div class="section-title">
           <div><p class="eyebrow">Cluster</p><h2 id="nodes-heading">Inference nodes</h2></div>
-          <div class="cluster-meta"><p><span id="online-count">—</span> online</p><p><span id="paired-count">—</span> paired</p></div>
+          <div class="cluster-actions">
+            <div class="cluster-meta"><p><span id="online-count">—</span> online</p><p><span id="paired-count">—</span> paired</p></div>
+            <div class="node-toolbar"><button id="add-node" class="secondary">Add Tailnet node</button><button id="refresh" class="secondary">Refresh nodes</button></div>
+          </div>
         </div>
         <div id="nodes" class="nodes" aria-live="polite"></div>
         <p id="allowlist" class="allowlist-path"></p>

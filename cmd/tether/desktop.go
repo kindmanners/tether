@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
+	"time"
 
 	"tether/internal/agent"
 	"tether/internal/certs"
@@ -35,6 +37,7 @@ type OrchestratorApp struct {
 	prepareDetail string
 	prepareLog    string
 	progressPath  string
+	monitorCancel context.CancelFunc
 }
 
 const defaultAgentPort = 7420
@@ -55,6 +58,8 @@ type DesktopNode struct {
 	AgentStatus string `json:"agentStatus"`
 	Detail      string `json:"detail"`
 	RPCPort     int    `json:"rpcPort"`
+	PingMS      int64  `json:"pingMs"`
+	PingAt      string `json:"pingAt"`
 }
 
 type GatewayState struct {
@@ -101,11 +106,21 @@ func (a *OrchestratorApp) startup(context.Context) {
 			_ = a.StartGateway()
 		}
 	}()
+
+	monitorCtx, cancel := context.WithCancel(context.Background())
+	a.mu.Lock()
+	a.monitorCancel = cancel
+	a.mu.Unlock()
+	go a.monitorPairedAgents(monitorCtx)
 }
 
 func (a *OrchestratorApp) shutdown(context.Context) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.monitorCancel != nil {
+		a.monitorCancel()
+		a.monitorCancel = nil
+	}
 	if a.gateway != nil && a.gateway.Process != nil {
 		_ = a.gateway.Process.Kill()
 	}
@@ -173,13 +188,19 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 			view = append(view, item)
 			continue
 		}
+		checkedAt := time.Now().UTC()
+		startedAt := time.Now()
 		status, statusErr := agent.NewClient(tlsConfig).GetStatus(agentAddress(node))
+		item.PingMS = time.Since(startedAt).Milliseconds()
+		item.PingAt = checkedAt.Format(time.RFC3339)
 		if statusErr != nil {
 			item.AgentStatus = "Unreachable"
 			item.Detail = statusErr.Error()
+			log.Printf("orchestrator: agent heartbeat host=%q timestamp=%s latency_ms=%d error=%q", node.Hostname, item.PingAt, item.PingMS, statusErr)
 		} else {
 			item.AgentStatus = status.Status
 			item.Detail = status.LastError
+			log.Printf("orchestrator: agent heartbeat host=%q timestamp=%s latency_ms=%d status=%q", node.Hostname, item.PingAt, item.PingMS, status.Status)
 		}
 		view = append(view, item)
 	}
@@ -359,6 +380,16 @@ func (a *OrchestratorApp) AddNode(hostname string, rpcPort int) error {
 }
 
 func (a *OrchestratorApp) StartRPC(hostname string) (*DesktopNode, error) {
+	// Give the operator an immediate, clear answer before attempting a start.
+	// The Agent independently enforces this too, so a concurrent request cannot
+	// launch a second RPC server between this check and the start command.
+	current, err := a.nodeStatus(hostname)
+	if err != nil {
+		return nil, err
+	}
+	if current.AgentStatus == "Running" {
+		return nil, fmt.Errorf("%s already has an RPC server running", hostname)
+	}
 	return a.command(hostname, func(client *agent.Client, address string, port int) (*agent.StatusResult, error) {
 		return client.StartRPCServer(address, port)
 	})
@@ -384,6 +415,34 @@ func (a *OrchestratorApp) command(hostname string, command func(*agent.Client, s
 		return nil, fmt.Errorf("sending command to %s: %w", hostname, err)
 	}
 	return &DesktopNode{Hostname: node.Hostname, Address: node.TailscaleIP, Tailnet: node.Status.String(), Paired: true, AgentStatus: status.Status, Detail: status.LastError, RPCPort: node.RPCPort}, nil
+}
+
+func (a *OrchestratorApp) nodeStatus(hostname string) (*DesktopNode, error) {
+	return a.command(hostname, func(client *agent.Client, address string, _ int) (*agent.StatusResult, error) {
+		return client.GetStatus(address)
+	})
+}
+
+// monitorPairedAgents keeps the control plane aware of paired Agents even
+// while the dashboard is not open. Each check travels over pinned mTLS and is
+// intentionally limited to status; it cannot start or stop a remote process.
+func (a *OrchestratorApp) monitorPairedAgents(ctx context.Context) {
+	check := func() {
+		if _, err := a.Snapshot(); err != nil {
+			log.Printf("orchestrator: five-minute agent heartbeat failed: %v", err)
+		}
+	}
+	check()
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			check()
+		}
+	}
 }
 
 // StartGateway starts the sibling tether-api executable. Keeping the gateway

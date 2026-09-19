@@ -5,6 +5,17 @@ const dialog = document.querySelector('#pair-dialog');
 const addDialog = document.querySelector('#add-dialog');
 let pairingHost = '';
 let preparationRefresh;
+let celebratingHost = '';
+
+function setTheme(theme) {
+  const isDark = theme === 'dark';
+  document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+  const toggle = document.querySelector('#theme-toggle');
+  toggle.setAttribute('aria-pressed', String(isDark));
+  toggle.setAttribute('aria-label', `Switch to ${isDark ? 'light' : 'dark'} mode`);
+  toggle.querySelector('.theme-label').textContent = isDark ? 'Light' : 'Dark';
+  localStorage.setItem('tether-theme', isDark ? 'dark' : 'light');
+}
 
 function report(message, error = false) {
   notice.textContent = message || '';
@@ -33,6 +44,7 @@ async function refresh() {
     document.querySelector('#node-count').textContent = `${state.nodes.length} ${state.nodes.length === 1 ? 'node' : 'nodes'}`;
     document.querySelector('#online-count').textContent = onlineCount;
     document.querySelector('#paired-count').textContent = pairedCount;
+		document.body.classList.toggle('is-cluster-ready', pairedCount > 0 && state.backend.ready);
 
     const gateway = document.querySelector('.gateway');
     gateway.classList.toggle('is-running', state.gateway.running);
@@ -40,7 +52,9 @@ async function refresh() {
     document.querySelector('#gateway-state').textContent = state.gateway.running ? 'Gateway running' : 'Gateway stopped';
     document.querySelector('#gateway-detail').textContent = state.gateway.detail;
     document.querySelector('#gateway-endpoint').textContent = state.gateway.endpoint;
-    document.querySelector('#start-gateway').disabled = state.gateway.running || !state.gateway.available || !state.backend.ready;
+    const startGateway = document.querySelector('#start-gateway');
+    startGateway.hidden = state.gateway.running;
+    startGateway.disabled = !state.gateway.available || !state.backend.ready;
     const contributing = state.contributeLocalGPU;
     const toggle = document.querySelector('#toggle-local-gpu');
     const prepare = document.querySelector('#prepare-backend');
@@ -54,7 +68,7 @@ async function refresh() {
     document.querySelector('.gateway').classList.toggle('is-control-only', !contributing);
 
     nodes.innerHTML = state.nodes.length ? state.nodes.map((node, index) => `
-      <article class="node-card" style="--index:${index}" data-state="${stateClass(node.tailnet)}">
+		<article class="node-card ${node.hostname === celebratingHost ? 'just-paired' : ''}" style="--index:${index}" data-hostname="${escapeHTML(node.hostname)}" data-state="${stateClass(node.tailnet)}">
         <span class="node-index">${String(index + 1).padStart(2, '0')}</span>
         <div class="node-top">
           <div><h3>${escapeHTML(node.hostname)}</h3><p>${escapeHTML(node.address || 'No Tailnet address')}</p></div>
@@ -68,9 +82,13 @@ async function refresh() {
         <p class="detail">${escapeHTML(node.detail || 'Ready for a command.')}</p>
         <div class="card-actions">
           ${!node.paired && node.tailnet === 'Online' ? `<button data-pair="${escapeHTML(node.hostname)}">Pair node</button>` : ''}
-          ${node.paired && node.tailnet === 'Online' ? `<button data-start="${escapeHTML(node.hostname)}">Start RPC</button><button class="secondary" data-stop="${escapeHTML(node.hostname)}">Stop RPC</button>` : ''}
+		  ${node.paired && node.tailnet === 'Online' ? `<button data-start="${escapeHTML(node.hostname)}" ${node.agentStatus === 'Running' ? 'disabled title="RPC server is already running"' : ''}>${node.agentStatus === 'Running' ? 'RPC running' : 'Start RPC'}</button><button class="secondary" data-stop="${escapeHTML(node.hostname)}">Stop RPC</button>` : ''}
         </div>
+		${node.paired && node.pingAt ? `<p class="heartbeat">Last ping ${escapeHTML(node.pingAt)} · ${node.pingMs} ms</p>` : ''}
       </article>`).join('') : '<p class="empty">No allowlisted nodes were found. Check Tailscale and the allowlist path.</p>';
+	if (celebratingHost) {
+		window.setTimeout(() => { celebratingHost = ''; }, 1100);
+	}
     report('');
   } catch (error) {
     report(error.message || String(error), true);
@@ -108,6 +126,8 @@ document.querySelector('#confirm-pair').addEventListener('click', async event =>
   try {
     await api().Pair(pairingHost, document.querySelector('#pair-code').value.trim());
     dialog.close();
+	celebratingHost = pairingHost;
+	report(`${pairingHost} paired securely. Control is now enabled.`);
     await refresh();
   } catch (error) { report(error.message || String(error), true); }
 });
@@ -134,6 +154,9 @@ document.querySelector('#confirm-add').addEventListener('click', async event => 
 });
 
 document.querySelector('#refresh').addEventListener('click', refresh);
+document.querySelector('#theme-toggle').addEventListener('click', () => {
+  setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+});
 document.querySelector('#start-gateway').addEventListener('click', async () => {
   try {
     await api().StartGateway();
@@ -154,4 +177,9 @@ document.querySelector('#prepare-backend').addEventListener('click', async () =>
     await refresh();
   } catch (error) { report(error.message || String(error), true); }
 });
-window.addEventListener('DOMContentLoaded', refresh);
+window.addEventListener('DOMContentLoaded', () => {
+  const savedTheme = localStorage.getItem('tether-theme');
+  const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  setTheme(savedTheme || (systemPrefersDark ? 'dark' : 'light'));
+  refresh();
+});
