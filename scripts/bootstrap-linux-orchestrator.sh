@@ -28,6 +28,15 @@ while (($#)); do
   shift
 done
 
+# Arch's cuda package deliberately exposes nvcc through /etc/profile.d/cuda.sh.
+# This provisioner is also invoked by the desktop app through a non-login
+# shell, so that profile fragment is not guaranteed to have run. Prefer the
+# documented package location when it exists rather than requiring a logout or
+# a manual PATH edit before local CUDA backend setup.
+if [[ -x /opt/cuda/bin/nvcc ]]; then
+  PATH="/opt/cuda/bin:$PATH"
+fi
+
 progress() {
   local step="$1" detail="$2"
   printf '\n==> %s\n' "$detail"

@@ -65,6 +65,10 @@ function updatePanels(state) {
   document.querySelector('#code-panel').hidden = !state.pairingActive;
   document.querySelector('#pair-code').textContent = state.pairingCode || '';
   document.querySelector('#service-note').textContent = state.serviceDetail || 'The Agent will listen for commands from the paired Orchestrator.';
+  document.querySelector('#heartbeat-note').textContent = state.heartbeatDetail || '';
+  const resetPairing = document.querySelector('#reset-pairing');
+  resetPairing.hidden = !state.paired;
+  resetPairing.disabled = state.pairingActive || state.provisioning;
 
   const logPanel = document.querySelector('#setup-log-panel');
   const log = state.provisioningLog || '';
@@ -116,4 +120,9 @@ document.querySelectorAll('#open-pair').forEach(button => button.addEventListene
   try { await api().OpenPairing(); await refresh(); }
   catch (error) { report(error.message || String(error), true); }
 }));
+document.querySelector('#reset-pairing').addEventListener('click', async () => {
+  if (!window.confirm('Re-pair with a different Orchestrator? This stops the Agent, deletes its current key, certificate, and saved Orchestrator trust record, then shows a new one-time code.')) return;
+  try { await api().ResetPairing(); await refresh(); }
+  catch (error) { report(error.message || String(error), true); }
+});
 window.addEventListener('DOMContentLoaded', refresh);

@@ -32,8 +32,9 @@ import (
 // role of what the real Orchestrator-side client will eventually be.
 // This harness IS effectively a prototype of that client.
 type pairRequestJSON struct {
-	PairingCode         string `json:"pairing_code"`
-	OrchestratorCertPEM string `json:"orchestrator_cert"`
+	PairingCode          string `json:"pairing_code"`
+	OrchestratorCertPEM  string `json:"orchestrator_cert"`
+	OrchestratorHostname string `json:"orchestrator_hostname"`
 }
 
 type pairResponseJSON struct {
@@ -59,8 +60,9 @@ var insecureClient = &http.Client{
 
 func attemptPair(addr, code, orchestratorCertPEM string) (int, *pairResponseJSON, *pairErrorJSON, error) {
 	reqBody, err := json.Marshal(pairRequestJSON{
-		PairingCode:         code,
-		OrchestratorCertPEM: orchestratorCertPEM,
+		PairingCode:          code,
+		OrchestratorCertPEM:  orchestratorCertPEM,
+		OrchestratorHostname: "test-orchestrator",
 	})
 	if err != nil {
 		return 0, nil, nil, err

@@ -18,6 +18,7 @@ import (
 	"tether/internal/certs"
 	agentconfig "tether/internal/config"
 	"tether/internal/executil"
+	"tether/internal/heartbeat"
 	"tether/internal/pairing"
 	"tether/internal/process"
 	"tether/internal/registry"
@@ -36,6 +37,8 @@ type AgentApp struct {
 	serviceRunning     bool
 	serviceDetail      string
 	serviceCancel      context.CancelFunc
+	serviceDone        chan struct{}
+	heartbeatDetail    string
 	processManager     *process.Manager
 	provisioning       bool
 	provisioningDetail string
@@ -68,6 +71,7 @@ type AgentSetupState struct {
 	PairingCode         string            `json:"pairingCode"`
 	ServiceRunning      bool              `json:"serviceRunning"`
 	ServiceDetail       string            `json:"serviceDetail"`
+	HeartbeatDetail     string            `json:"heartbeatDetail"`
 	CanProvision        bool              `json:"canProvision"`
 	Ready               bool              `json:"ready"`
 	Checklist           []AgentSetupCheck `json:"checklist"`
@@ -205,6 +209,7 @@ func (a *AgentApp) State() (*AgentSetupState, error) {
 	state.PairingCode = a.pairingCode
 	state.ServiceRunning = a.serviceRunning
 	state.ServiceDetail = a.serviceDetail
+	state.HeartbeatDetail = a.heartbeatDetail
 	state.Provisioning = a.provisioning
 	state.ProvisioningDetail = a.provisioningDetail
 	state.ProvisioningError = a.provisioningError
@@ -626,6 +631,12 @@ func (a *AgentApp) OpenPairing() error {
 		}
 		a.mu.Unlock()
 		if err == nil {
+			if saveErr := heartbeat.Save(server.OrchestratorTailnetHostname()); saveErr != nil {
+				a.mu.Lock()
+				a.serviceDetail = "Pairing succeeded, but saving the Orchestrator heartbeat target failed: " + saveErr.Error()
+				a.mu.Unlock()
+				return
+			}
 			_ = a.StartService()
 		}
 	}()
@@ -691,14 +702,20 @@ func (a *AgentApp) StartService() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.serviceCancel = cancel
+	a.serviceDone = make(chan struct{})
 	a.serviceDetail = fmt.Sprintf("Listening for the paired Orchestrator on TCP %d.", agentPort)
 	a.mu.Unlock()
+	go a.runHeartbeat(ctx)
 	go func() {
 		err := agent.NewServer(cfg, a.processManager).Start(ctx, fmt.Sprintf(":%d", agentPort), tlsConfig)
 		_ = a.processManager.StopDefault()
 		a.mu.Lock()
 		a.serviceRunning = false
 		a.serviceCancel = nil
+		if a.serviceDone != nil {
+			close(a.serviceDone)
+			a.serviceDone = nil
+		}
 		if err != nil && ctx.Err() == nil {
 			a.serviceDetail = "Agent service stopped: " + err.Error()
 		} else if ctx.Err() != nil {
@@ -718,6 +735,80 @@ func (a *AgentApp) StopService() error {
 	}
 	cancel()
 	return nil
+}
+
+// ResetPairing is an explicit local recovery action. It stops the mTLS
+// listener before deleting both the old Agent identity and pinned
+// Orchestrator certificate, then opens a fresh pairing window.
+func (a *AgentApp) ResetPairing() error {
+	a.mu.Lock()
+	if a.provisioning || a.pairingActive {
+		a.mu.Unlock()
+		return fmt.Errorf("wait for the current setup or pairing action to finish")
+	}
+	cancel, done := a.serviceCancel, a.serviceDone
+	a.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				return fmt.Errorf("the Agent service did not stop in time; try again")
+			}
+		}
+	}
+	hostname, err := registry.SelfHostname()
+	if err != nil {
+		return fmt.Errorf("checking Tailscale hostname: %w", err)
+	}
+	if err := trust.Delete(orchestratorIdentityName); err != nil {
+		return err
+	}
+	if err := heartbeat.Delete(); err != nil {
+		return err
+	}
+	if err := certs.Delete(hostname); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.serviceDetail = "Previous pairing keys and certificates were removed. Creating a new pairing code."
+	a.heartbeatDetail = "Heartbeat will resume after pairing completes."
+	a.mu.Unlock()
+	return a.OpenPairing()
+}
+
+func (a *AgentApp) runHeartbeat(ctx context.Context) {
+	target, err := heartbeat.Load()
+	if err != nil {
+		a.mu.Lock()
+		a.heartbeatDetail = "No paired Orchestrator heartbeat target is available."
+		a.mu.Unlock()
+		return
+	}
+	ping := func() {
+		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := heartbeat.Ping(pingCtx, target)
+		cancel()
+		a.mu.Lock()
+		if err != nil {
+			a.heartbeatDetail = "Orchestrator heartbeat failed: " + err.Error()
+		} else {
+			a.heartbeatDetail = "Orchestrator heartbeat to " + target + " succeeded at " + time.Now().Format(time.Kitchen)
+		}
+		a.mu.Unlock()
+	}
+	ping()
+	ticker := time.NewTicker(heartbeat.Interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ping()
+		}
+	}
 }
 
 // prepareWindowsProvisioner turns the one-file download into a self-contained

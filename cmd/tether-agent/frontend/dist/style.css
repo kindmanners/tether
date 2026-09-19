@@ -159,7 +159,9 @@ body.is-refreshing #refresh::after { content: ""; position: absolute; left: 0; r
   .status-hero { min-height: 360px; }
   .hero-index { flex-basis: 64px; }
   .action-panel { grid-template-columns: 1fr 1.5fr; }
-  .action-panel button { grid-column: 1 / -1; justify-self: start; }
+.action-panel button { grid-column: 1 / -1; justify-self: start; }
+
+.heartbeat-note { margin: 0; color: var(--muted); font-size: .78rem; }
   .action-panel.ready { margin: 0 -24px; padding: 30px 24px; }
   .code-panel { display: grid; grid-template-columns: 1fr 1fr; }
   .code-panel > p { grid-column: 2; }

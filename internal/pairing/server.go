@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,8 +37,9 @@ const shutdownTimeout = 5 * time.Second
 // has no native binary type — PEM is already text, so it round-trips
 // through JSON cleanly without a base64 wrapper layer of our own.
 type pairRequest struct {
-	PairingCode         string `json:"pairing_code"`
-	OrchestratorCertPEM string `json:"orchestrator_cert"`
+	PairingCode          string `json:"pairing_code"`
+	OrchestratorCertPEM  string `json:"orchestrator_cert"`
+	OrchestratorHostname string `json:"orchestrator_hostname"`
 }
 
 // pairResponse is what the Agent sends back on a successful pairing.
@@ -76,10 +78,11 @@ type Server struct {
 	agentIdentity *certs.Identity
 	window        time.Duration
 
-	mu     sync.Mutex
-	result error // set once pairing completes or the window closes; nil result + done==true means success
-	done   bool
-	doneCh chan struct{}
+	mu                          sync.Mutex
+	result                      error // set once pairing completes or the window closes; nil result + done==true means success
+	done                        bool
+	doneCh                      chan struct{}
+	orchestratorTailnetHostname string
 }
 
 // NewServer creates a pairing Server for a single pairing attempt, using
@@ -110,6 +113,14 @@ func NewServer(agentIdentity *certs.Identity, window time.Duration) (*Server, er
 // display; see design doc for the full flow).
 func (s *Server) Code() string {
 	return s.code.String()
+}
+
+// OrchestratorTailnetHostname returns the peer hostname supplied during a
+// successful code-gated pairing exchange for the Agent heartbeat.
+func (s *Server) OrchestratorTailnetHostname() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.orchestratorTailnetHostname
 }
 
 // Start begins listening on addr (e.g. ":7420") and blocks until the
@@ -246,11 +257,19 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.OrchestratorHostname == "" || strings.ContainsAny(req.OrchestratorHostname, "/\\ \t\r\n") {
+		writeError(w, http.StatusBadRequest, "orchestrator Tailnet hostname is invalid")
+		s.finish(fmt.Errorf("pairing succeeded on code but Orchestrator Tailnet hostname was invalid"))
+		return
+	}
 	if err := trust.Pin(orchestratorHostname, block.Bytes); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to pin orchestrator certificate")
 		s.finish(fmt.Errorf("pairing succeeded on code but pinning orchestrator cert failed: %w", err))
 		return
 	}
+	s.mu.Lock()
+	s.orchestratorTailnetHostname = req.OrchestratorHostname
+	s.mu.Unlock()
 
 	resp := pairResponse{
 		AgentCertPEM: string(pem.EncodeToMemory(&pem.Block{

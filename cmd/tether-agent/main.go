@@ -13,10 +13,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"tether/internal/agent"
 	"tether/internal/certs"
 	agentconfig "tether/internal/config"
+	"tether/internal/heartbeat"
 	"tether/internal/pairing"
 	"tether/internal/process"
 	"tether/internal/registry"
@@ -142,7 +144,10 @@ func pair(identity *certs.Identity, hostname string) error {
 	fmt.Println("  This code is single-use and shown only here — it is never logged.")
 	fmt.Println()
 
-	return server.Start(fmt.Sprintf(":%d", agentPort))
+	if err := server.Start(fmt.Sprintf(":%d", agentPort)); err != nil {
+		return err
+	}
+	return heartbeat.Save(server.OrchestratorTailnetHostname())
 }
 
 func serve(identity *certs.Identity, hostname string) error {
@@ -168,6 +173,9 @@ func serve(identity *certs.Identity, hostname string) error {
 	server := agent.NewServer(cfg, manager)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if target, heartbeatErr := heartbeat.Load(); heartbeatErr == nil {
+		go terminalHeartbeat(ctx, target)
+	}
 
 	addr := fmt.Sprintf(":%d", agentPort)
 	fmt.Printf("Tether Agent — %s\n", hostname)
@@ -178,4 +186,26 @@ func serve(identity *certs.Identity, hostname string) error {
 		return fmt.Errorf("stopping managed rpc-server: %w", stopErr)
 	}
 	return err
+}
+
+func terminalHeartbeat(ctx context.Context, target string) {
+	ping := func() {
+		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := heartbeat.Ping(pingCtx, target)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "tether-agent: Orchestrator heartbeat failed: %v\n", err)
+		}
+	}
+	ping()
+	ticker := time.NewTicker(heartbeat.Interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ping()
+		}
+	}
 }

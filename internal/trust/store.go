@@ -250,3 +250,19 @@ func validateHostname(hostname string) error {
 
 	return nil
 }
+
+// Delete removes a pinned peer certificate. It is used only by an explicit
+// local re-pair action; ordinary startup never silently discards trust.
+func Delete(hostname string) error {
+	if err := validateHostname(hostname); err != nil {
+		return fmt.Errorf("invalid hostname %q: %w", hostname, err)
+	}
+	d, err := dir()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(d, hostname+".crt")); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing trust record for %q: %w", hostname, err)
+	}
+	return nil
+}

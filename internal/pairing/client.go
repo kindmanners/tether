@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"tether/internal/certs"
+	"tether/internal/registry"
 	"tether/internal/trust"
 )
 
@@ -86,14 +87,19 @@ func NewClient(orchestratorIdentity *certs.Identity) *Client {
 // Pair with a corrected code against the same addr, as long as the
 // Agent's window hasn't closed yet.
 func (c *Client) Pair(addr, code string) (*PairResult, error) {
+	orchestratorHostname, err := registry.SelfHostname()
+	if err != nil {
+		return nil, fmt.Errorf("determining Orchestrator Tailnet hostname: %w", err)
+	}
 	orchestratorCertPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: c.orchestratorIdentity.CertDER,
 	})
 
 	reqBody, err := json.Marshal(pairRequest{
-		PairingCode:         code,
-		OrchestratorCertPEM: string(orchestratorCertPEM),
+		PairingCode:          code,
+		OrchestratorCertPEM:  string(orchestratorCertPEM),
+		OrchestratorHostname: orchestratorHostname,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encoding pairing request: %w", err)

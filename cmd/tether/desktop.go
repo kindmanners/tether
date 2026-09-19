@@ -131,7 +131,17 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 		return nil, fmt.Errorf("loading local identity: %w", err)
 	}
 
+	selfHostname, _ := registry.SelfHostname()
 	nodes := registry.Build(allowlist, peers).All()
+	if selfHostname != "" {
+		filtered := nodes[:0]
+		for _, node := range nodes {
+			if node.Hostname != selfHostname {
+				filtered = append(filtered, node)
+			}
+		}
+		nodes = filtered
+	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Hostname < nodes[j].Hostname })
 	view := make([]DesktopNode, 0, len(nodes))
 	for _, node := range nodes {

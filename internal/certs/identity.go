@@ -131,6 +131,25 @@ func LoadOrCreate(name string) (*Identity, error) {
 	return identity, nil
 }
 
+// Delete removes one local identity so the next LoadOrCreate call generates a
+// new keypair. Re-pairing deliberately rotates both sides of the Agent's
+// identity/trust relationship rather than leaving an old private key behind.
+func Delete(name string) error {
+	if err := validateName(name); err != nil {
+		return fmt.Errorf("invalid identity name %q: %w", name, err)
+	}
+	d, err := dir()
+	if err != nil {
+		return err
+	}
+	for _, path := range []string{filepath.Join(d, name+".key"), filepath.Join(d, name+".crt")} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing identity %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // windowsReservedNames are filenames Windows treats specially regardless
 // of extension — see internal/trust/store.go's copy of this same table
 // for the fuller reasoning on why this is checked unconditionally on
