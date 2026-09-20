@@ -2,6 +2,50 @@ const api = () => window.go?.main?.AgentApp;
 const notice = document.querySelector('#notice');
 let refreshTimer;
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '—';
+  return `${(bytes / (1024 ** 3)).toFixed(bytes >= 100 * 1024 ** 3 ? 0 : 1)} GB`;
+}
+
+function escapeHTML(value) {
+  return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+}
+
+function renderTelemetry(gpus = [], modelStatus = '') {
+  const container = document.querySelector('#gpu-telemetry');
+  container.replaceChildren();
+  if (!gpus.length) {
+    const empty = document.createElement('p');
+    empty.className = 'telemetry-empty';
+    empty.textContent = 'GPU telemetry appears here after audited local setup completes.';
+    container.append(empty);
+  }
+  gpus.forEach((gpu, index) => {
+    const total = Number(gpu.vramBytes) || 0;
+    const free = Number(gpu.vramFreeBytes) || 0;
+    const used = Math.max(0, total - free);
+    const memoryPercent = total ? Math.min(100, Math.round((used / total) * 100)) : 0;
+    const card = document.createElement('article');
+    card.className = 'gpu-card';
+    card.innerHTML = `<div class="gpu-card-heading"><p>GPU ${String(index + 1).padStart(2, '0')}</p><strong>${escapeHTML(gpu.name || 'NVIDIA GPU')}</strong></div>
+      <div class="gpu-metrics"><div><span>GPU use</span><strong>${Number.isFinite(Number(gpu.utilizationPercent)) ? `${gpu.utilizationPercent}%` : '—'}</strong></div><div><span>VRAM</span><strong>${formatBytes(used)} <em>/ ${formatBytes(total)}</em></strong></div></div>
+      <div class="capacity-bar" aria-label="${memoryPercent}% of VRAM in use"><span style="--usage: ${memoryPercent}%"></span></div>
+      <p class="gpu-meta">${formatBytes(free)} free${gpu.driverVersion ? ` · Driver ${escapeHTML(gpu.driverVersion)}` : ''}</p>`;
+    container.append(card);
+  });
+  document.querySelector('#model-status').textContent = modelStatus || 'Managed by the paired Orchestrator';
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const dark = theme === 'dark';
+  const toggle = document.querySelector('#theme-toggle');
+  toggle.textContent = dark ? 'Light mode' : 'Dark mode';
+  toggle.setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} mode`);
+  toggle.setAttribute('aria-pressed', String(dark));
+  try { localStorage.setItem('tether-agent-theme', theme); } catch (_) { /* optional preference */ }
+}
+
 function report(message, error = false) {
   notice.textContent = message || '';
   notice.dataset.error = error ? 'true' : 'false';
@@ -89,10 +133,12 @@ async function refresh() {
     document.querySelector('#hostname').textContent = state.hostname || 'Tailscale unavailable';
     document.querySelector('#config').textContent = state.configurationNote;
     document.querySelector('#report').textContent = state.bootstrapNote;
+    renderTelemetry(state.gpus, state.modelStatus);
 
     const checkedAt = new Date(state.checkedAt);
     const refreshLabel = state.provisioning ? 'Last live update' : 'Last checked';
     document.querySelector('#last-refreshed').textContent = Number.isNaN(checkedAt.getTime()) ? `${refreshLabel}: just now` : `${refreshLabel}: ${checkedAt.toLocaleTimeString()}`;
+    document.querySelector('#telemetry-updated').textContent = Number.isNaN(checkedAt.getTime()) ? 'Updated just now' : `Updated ${checkedAt.toLocaleTimeString()}`;
     renderChecklist(state.checklist || []);
     updatePanels(state);
     if (state.provisioningError) report(state.provisioningError, true);
@@ -108,6 +154,9 @@ async function refresh() {
 }
 
 document.querySelector('#refresh').addEventListener('click', refresh);
+document.querySelector('#theme-toggle').addEventListener('click', () => {
+  setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+});
 document.querySelector('#provision').addEventListener('click', async () => {
   try { await api().StartProvisioning(); await refresh(); }
   catch (error) { report(error.message || String(error), true); }
@@ -125,4 +174,9 @@ document.querySelector('#reset-pairing').addEventListener('click', async () => {
   try { await api().ResetPairing(); await refresh(); }
   catch (error) { report(error.message || String(error), true); }
 });
-window.addEventListener('DOMContentLoaded', refresh);
+window.addEventListener('DOMContentLoaded', () => {
+  let theme = window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  try { theme = localStorage.getItem('tether-agent-theme') || theme; } catch (_) { /* optional preference */ }
+  setTheme(theme);
+  refresh();
+});

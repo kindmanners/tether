@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,8 @@ type AgentSetupState struct {
 	ConfigurationNote   string            `json:"configurationNote"`
 	BootstrapReady      bool              `json:"bootstrapReady"`
 	BootstrapNote       string            `json:"bootstrapNote"`
+	GPUs                []AgentGPUStatus  `json:"gpus"`
+	ModelStatus         string            `json:"modelStatus"`
 	Paired              bool              `json:"paired"`
 	PairingActive       bool              `json:"pairingActive"`
 	PairingCode         string            `json:"pairingCode"`
@@ -81,6 +84,17 @@ type AgentSetupState struct {
 	ProvisioningLog     string            `json:"provisioningLog"`
 	ProvisioningLogPath string            `json:"provisioningLogPath"`
 	CheckedAt           string            `json:"checkedAt"`
+}
+
+// AgentGPUStatus is the locally observed accelerator state shown in the
+// desktop shell.  The bootstrap report supplies a safe fallback, while the
+// NVIDIA query refreshes capacity and utilization whenever it is available.
+type AgentGPUStatus struct {
+	Name               string `json:"name"`
+	DriverVersion      string `json:"driverVersion"`
+	VRAMBytes          int64  `json:"vramBytes"`
+	VRAMFreeBytes      int64  `json:"vramFreeBytes"`
+	UtilizationPercent int    `json:"utilizationPercent"`
 }
 
 func NewAgentApp(forcePairing bool) *AgentApp {
@@ -186,6 +200,10 @@ func (a *AgentApp) State() (*AgentSetupState, error) {
 
 	reportPath := filepath.Join(filepath.Dir(configPath), "bootstrap-report.json")
 	reportReady, reportDetail := validateBootstrapReport(reportPath)
+	state.GPUs = readGPUStatus(reportPath)
+	// RPC nodes expose GPUs only. The GGUF is loaded by the paired
+	// Orchestrator, so implying a local model would be misleading.
+	state.ModelStatus = "No model is loaded on this node"
 	if reportReady {
 		state.BootstrapReady = true
 		state.BootstrapNote = "GPU bootstrap report is valid at " + reportPath
@@ -350,6 +368,52 @@ func validateBootstrapReport(path string) (bool, string) {
 		return false, "The GPU setup report is incomplete. Run local setup again."
 	}
 	return true, "The audited GPU setup report is present and records " + report.Hostname + "."
+}
+
+func readGPUStatus(reportPath string) []AgentGPUStatus {
+	data, err := os.ReadFile(reportPath)
+	if err != nil {
+		return nil
+	}
+	var report agent.CapabilitiesResult
+	if json.Unmarshal(bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF}), &report) != nil {
+		return nil
+	}
+	status := make([]AgentGPUStatus, 0, len(report.GPUs))
+	for _, gpu := range report.GPUs {
+		status = append(status, AgentGPUStatus{Name: gpu.Name, DriverVersion: gpu.DriverVersion, VRAMBytes: gpu.VRAMBytes, VRAMFreeBytes: gpu.VRAMFreeBytes})
+	}
+	if live, err := liveGPUStatus(); err == nil && len(live) > 0 {
+		return live
+	}
+	return status
+}
+
+func liveGPUStatus() ([]AgentGPUStatus, error) {
+	path, err := exec.LookPath("nvidia-smi")
+	if err != nil {
+		return nil, err
+	}
+	output, err := exec.Command(path, "--query-gpu=name,memory.total,memory.free,utilization.gpu,driver_version", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.FieldsFunc(string(output), func(r rune) bool { return r == '\n' || r == '\r' })
+	result := make([]AgentGPUStatus, 0, len(lines))
+	for _, line := range lines {
+		fields := strings.Split(line, ",")
+		if len(fields) != 5 {
+			return nil, fmt.Errorf("unexpected nvidia-smi row %q", line)
+		}
+		total, totalErr := strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 64)
+		free, freeErr := strconv.ParseInt(strings.TrimSpace(fields[2]), 10, 64)
+		utilization, utilizationErr := strconv.Atoi(strings.TrimSpace(fields[3]))
+		if totalErr != nil || freeErr != nil || utilizationErr != nil {
+			return nil, fmt.Errorf("parsing nvidia-smi telemetry")
+		}
+		result = append(result, AgentGPUStatus{Name: strings.TrimSpace(fields[0]), VRAMBytes: total * 1024 * 1024, VRAMFreeBytes: free * 1024 * 1024, UtilizationPercent: utilization, DriverVersion: strings.TrimSpace(fields[4])})
+	}
+	return result, nil
 }
 
 // StartProvisioning invokes the audited, platform-specific local provisioner.
