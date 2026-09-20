@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,7 @@ type modelWorker struct {
 	state   string
 	lastUse time.Time
 	timer   *time.Timer
+	pinned  bool
 }
 
 type gateway struct {
@@ -103,6 +105,11 @@ func scanGatewayModels(dir string) (map[string]string, error) {
 }
 
 func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !g.authorized(r) {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	if r.URL.Path == "/api/v1/model-states" {
 		if r.Method != http.MethodGet {
 			http.Error(w, "only GET is supported", http.StatusMethodNotAllowed)
@@ -111,9 +118,20 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.writeStates(w)
 		return
 	}
-	if !g.authorized(r) {
-		w.Header().Set("WWW-Authenticate", "Bearer")
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	if r.URL.Path == "/api/v1/models/refresh" {
+		if r.Method != http.MethodPost {
+			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := g.refreshModels(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		g.writeStates(w)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/models/") {
+		g.handleModelAction(w, r)
 		return
 	}
 	switch {
@@ -126,6 +144,41 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (g *gateway) handleModelAction(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/models/"), "/")
+	if len(parts) != 2 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	modelID, err := url.PathUnescape(parts[0])
+	if err != nil {
+		http.Error(w, "invalid model id", http.StatusBadRequest)
+		return
+	}
+	switch parts[1] {
+	case "load":
+		if r.Method != http.MethodPost {
+			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
+			return
+		}
+		err = g.load(modelID)
+	case "unload":
+		if r.Method != http.MethodPost {
+			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
+			return
+		}
+		err = g.unloadModel(modelID)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	g.writeStates(w)
+}
+
 func (g *gateway) authorized(r *http.Request) bool {
 	if g.cfg.apiKey == "" {
 		return true
@@ -134,10 +187,12 @@ func (g *gateway) authorized(r *http.Request) bool {
 }
 
 func (g *gateway) writeModels(w http.ResponseWriter) {
+	g.mu.Lock()
 	ids := make([]string, 0, len(g.models))
 	for id := range g.models {
 		ids = append(ids, id)
 	}
+	g.mu.Unlock()
 	sort.Strings(ids)
 	data := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
@@ -253,6 +308,11 @@ func (g *gateway) release(worker *modelWorker) {
 		return
 	}
 	worker.lastUse = time.Now()
+	if worker.pinned {
+		worker.state = "loaded"
+		g.recordLocked(worker, "")
+		return
+	}
 	if g.cfg.idleTimeout > 0 {
 		worker.state = "idle-countdown"
 		worker.timer = time.AfterFunc(g.cfg.idleTimeout, func() { g.unload(worker) })
@@ -260,6 +320,102 @@ func (g *gateway) release(worker *modelWorker) {
 		worker.state = "loaded"
 	}
 	g.recordLocked(worker, "")
+}
+
+// load starts a model worker without a chat request and keeps it resident
+// until the Models control explicitly unloads it. This makes model placement
+// observable and controllable from the Orchestrator rather than treating the
+// first client prompt as an implicit load command.
+func (g *gateway) load(modelID string) error {
+	g.mu.Lock()
+	if worker := g.workerForModelLocked(modelID); worker != nil {
+		if worker.timer != nil {
+			worker.timer.Stop()
+			worker.timer = nil
+		}
+		worker.pinned = true
+		worker.state = "loaded"
+		g.recordLocked(worker, "")
+		g.mu.Unlock()
+		return nil
+	}
+	path, ok := g.models[modelID]
+	if !ok {
+		g.mu.Unlock()
+		return fmt.Errorf("model %q is not in Tether's GGUF library", modelID)
+	}
+	g.states[modelID] = modelState{Model: modelID, State: "loading", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	g.mu.Unlock()
+
+	plan, err := g.planFor(path)
+	if err != nil {
+		g.setState(modelID, "unloaded", nil, err.Error())
+		return err
+	}
+	worker, err := g.launch(modelID, path, plan)
+	if err != nil {
+		g.setState(modelID, "unloaded", planNodeNames(plan), err.Error())
+		return err
+	}
+
+	g.mu.Lock()
+	if existing := g.workerForModelLocked(modelID); existing != nil {
+		g.mu.Unlock()
+		_ = worker.cmd.Process.Kill()
+		_, _ = worker.cmd.Process.Wait()
+		return g.load(modelID)
+	}
+	worker.key = workerKey(modelID, plan)
+	worker.pinned = true
+	worker.state = "loaded"
+	g.workers[worker.key] = worker
+	g.recordLocked(worker, "")
+	g.mu.Unlock()
+	return nil
+}
+
+func (g *gateway) unloadModel(modelID string) error {
+	g.mu.Lock()
+	worker := g.workerForModelLocked(modelID)
+	if worker == nil {
+		if _, ok := g.models[modelID]; !ok {
+			g.mu.Unlock()
+			return fmt.Errorf("model %q is not in Tether's GGUF library", modelID)
+		}
+		g.states[modelID] = modelState{Model: modelID, State: "unloaded", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		g.mu.Unlock()
+		return nil
+	}
+	if worker.active > 0 {
+		g.mu.Unlock()
+		return fmt.Errorf("model %q has an active request", modelID)
+	}
+	if worker.timer != nil {
+		worker.timer.Stop()
+		worker.timer = nil
+	}
+	worker.pinned = false
+	worker.state = "unloading"
+	g.recordLocked(worker, "")
+	g.mu.Unlock()
+	g.unload(worker)
+	return nil
+}
+
+func (g *gateway) refreshModels() error {
+	models, err := scanGatewayModels(g.cfg.modelsDir)
+	if err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.models = models
+	for modelID := range g.states {
+		if _, installed := models[modelID]; !installed && g.workerForModelLocked(modelID) == nil {
+			delete(g.states, modelID)
+		}
+	}
+	return nil
 }
 
 func (g *gateway) unload(worker *modelWorker) {

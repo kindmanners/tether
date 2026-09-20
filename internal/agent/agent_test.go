@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,10 +13,15 @@ import (
 
 func TestHandleCapabilitiesServesBootstrapReport(t *testing.T) {
 	configHome := t.TempDir()
+	emptyPath := t.TempDir()
 	// os.UserConfigDir uses APPDATA on Windows and XDG_CONFIG_HOME on Linux.
 	// Set both so this test never reads or writes the developer's local state.
 	t.Setenv("APPDATA", configHome)
 	t.Setenv("XDG_CONFIG_HOME", configHome)
+	// Keep this fixture deterministic when the test runner itself has NVIDIA
+	// tooling installed: the handler otherwise deliberately replaces the
+	// bootstrapped values with current hardware telemetry.
+	t.Setenv("PATH", emptyPath)
 	dir, err := agentconfig.DefaultDirectory()
 	if err != nil {
 		t.Fatal(err)
@@ -23,7 +29,7 @@ func TestHandleCapabilitiesServesBootstrapReport(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	report := `{"observedAt":"2026-09-13T12:00:00Z","hostname":"mathesis","cudaVersion":"13.4","gpus":[{"name":"NVIDIA GPU","driverVersion":"1","vramBytes":4294967296,"vramFreeBytes":3435973837}]}`
+	report := `{"observedAt":"2026-09-13T12:00:00Z","hostname":"mathesis","cudaVersion":"13.4","gpus":[{"name":"NVIDIA GPU","driverVersion":"1","vramBytes":4294967296,"vramFreeBytes":3435973837,"utilizationPercent":38}]}`
 	if err := os.WriteFile(filepath.Join(dir, "bootstrap-report.json"), append([]byte{0xEF, 0xBB, 0xBF}, []byte(report)...), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +43,13 @@ func TestHandleCapabilitiesServesBootstrapReport(t *testing.T) {
 	}
 	if contentType := recorder.Header().Get("Content-Type"); contentType != "application/json" {
 		t.Fatalf("content type = %q, want application/json", contentType)
+	}
+	var got CapabilitiesResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GPUs[0].UtilizationPercent != 38 {
+		t.Fatalf("GPU utilization = %d, want 38", got.GPUs[0].UtilizationPercent)
 	}
 }
 

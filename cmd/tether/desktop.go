@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,9 +42,16 @@ type OrchestratorApp struct {
 	prepareLog    string
 	progressPath  string
 	monitorCancel context.CancelFunc
+	usageHistory  map[string][]NodeUsageSample
+	modelDownload ModelDownload
 }
 
-const defaultAgentPort = 7420
+const (
+	defaultAgentPort     = 7420
+	modelGatewayURL      = "http://127.0.0.1:11435"
+	gptOSS20BFilename    = "gpt-oss-20b-MXFP4.gguf"
+	gptOSS20BDownloadURL = "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf"
+)
 
 type OrchestratorSnapshot struct {
 	AllowlistPath      string        `json:"allowlistPath"`
@@ -51,15 +62,26 @@ type OrchestratorSnapshot struct {
 }
 
 type DesktopNode struct {
-	Hostname    string `json:"hostname"`
-	Address     string `json:"address"`
-	Tailnet     string `json:"tailnet"`
-	Paired      bool   `json:"paired"`
-	AgentStatus string `json:"agentStatus"`
-	Detail      string `json:"detail"`
-	RPCPort     int    `json:"rpcPort"`
-	PingMS      int64  `json:"pingMs"`
-	PingAt      string `json:"pingAt"`
+	Hostname    string            `json:"hostname"`
+	Address     string            `json:"address"`
+	Tailnet     string            `json:"tailnet"`
+	Paired      bool              `json:"paired"`
+	AgentStatus string            `json:"agentStatus"`
+	Detail      string            `json:"detail"`
+	RPCPort     int               `json:"rpcPort"`
+	PingMS      int64             `json:"pingMs"`
+	PingAt      string            `json:"pingAt"`
+	GPUHistory  []NodeUsageSample `json:"gpuHistory,omitempty"`
+}
+
+// NodeUsageSample is the aggregate of the GPUs reported by one Agent at one
+// point in time. The desktop UI uses the recent samples for its compact
+// per-node activity chart; it is intentionally process-local, not a durable
+// monitoring database.
+type NodeUsageSample struct {
+	ObservedAt  string `json:"observedAt"`
+	GPUPercent  int    `json:"gpuPercent"`
+	VRAMPercent int    `json:"vramPercent"`
 }
 
 type GatewayState struct {
@@ -67,6 +89,35 @@ type GatewayState struct {
 	Available bool   `json:"available"`
 	Detail    string `json:"detail"`
 	Endpoint  string `json:"endpoint"`
+}
+
+// ModelLibrary is the Orchestrator's local GGUF inventory plus the gateway's
+// live worker state. Model files remain local to the control host; only their
+// llama.cpp layers are placed across paired GPU nodes.
+type ModelLibrary struct {
+	Directory string         `json:"directory"`
+	Models    []DesktopModel `json:"models"`
+	Download  ModelDownload  `json:"download"`
+}
+
+type DesktopModel struct {
+	ID        string   `json:"id"`
+	Filename  string   `json:"filename"`
+	Path      string   `json:"path"`
+	SizeBytes int64    `json:"sizeBytes"`
+	State     string   `json:"state"`
+	Nodes     []string `json:"nodes,omitempty"`
+	UpdatedAt string   `json:"updatedAt,omitempty"`
+	Detail    string   `json:"detail,omitempty"`
+}
+
+type ModelDownload struct {
+	ID         string `json:"id"`
+	Filename   string `json:"filename"`
+	State      string `json:"state"`
+	Bytes      int64  `json:"bytes"`
+	TotalBytes int64  `json:"totalBytes"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 // BackendState is the local llama.cpp prerequisite for serving models. It is
@@ -92,7 +143,11 @@ func NewOrchestratorApp(allowlistPath string) *OrchestratorApp {
 		// while Wails is starting.
 		configPath = ""
 	}
-	return &OrchestratorApp{allowlistPath: allowlistPath, configPath: configPath}
+	return &OrchestratorApp{
+		allowlistPath: allowlistPath,
+		configPath:    configPath,
+		usageHistory:  make(map[string][]NodeUsageSample),
+	}
 }
 
 func (a *OrchestratorApp) startup(context.Context) {
@@ -190,7 +245,8 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 		}
 		checkedAt := time.Now().UTC()
 		startedAt := time.Now()
-		status, statusErr := agent.NewClient(tlsConfig).GetStatus(agentAddress(node))
+		client := agent.NewClient(tlsConfig)
+		status, statusErr := client.GetStatus(agentAddress(node))
 		item.PingMS = time.Since(startedAt).Milliseconds()
 		item.PingAt = checkedAt.Format(time.RFC3339)
 		if statusErr != nil {
@@ -200,6 +256,11 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 		} else {
 			item.AgentStatus = status.Status
 			item.Detail = status.LastError
+			if capabilities, capabilitiesErr := client.GetCapabilities(agentAddress(node)); capabilitiesErr == nil {
+				item.GPUHistory = a.recordNodeUsage(node.Hostname, checkedAt, capabilities.GPUs)
+			} else {
+				item.GPUHistory = a.nodeUsageHistory(node.Hostname)
+			}
 			log.Printf("orchestrator: agent heartbeat host=%q timestamp=%s latency_ms=%d status=%q", node.Hostname, item.PingAt, item.PingMS, status.Status)
 		}
 		view = append(view, item)
@@ -212,6 +273,68 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 		Nodes:              view,
 		Gateway:            a.gatewayState(),
 	}, nil
+}
+
+const usageHistoryWindow = time.Minute
+
+func (a *OrchestratorApp) recordNodeUsage(hostname string, observedAt time.Time, gpus []agent.GPUCapability) []NodeUsageSample {
+	sample, ok := aggregateNodeUsage(observedAt, gpus)
+	if !ok {
+		return a.nodeUsageHistory(hostname)
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.usageHistory == nil {
+		a.usageHistory = make(map[string][]NodeUsageSample)
+	}
+	history := append(a.usageHistory[hostname], sample)
+	cutoff := observedAt.Add(-usageHistoryWindow)
+	first := 0
+	for first < len(history) {
+		at, err := time.Parse(time.RFC3339, history[first].ObservedAt)
+		if err == nil && !at.Before(cutoff) {
+			break
+		}
+		first++
+	}
+	history = append([]NodeUsageSample(nil), history[first:]...)
+	a.usageHistory[hostname] = history
+	return append([]NodeUsageSample(nil), history...)
+}
+
+func (a *OrchestratorApp) nodeUsageHistory(hostname string) []NodeUsageSample {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]NodeUsageSample(nil), a.usageHistory[hostname]...)
+}
+
+func aggregateNodeUsage(observedAt time.Time, gpus []agent.GPUCapability) (NodeUsageSample, bool) {
+	if len(gpus) == 0 {
+		return NodeUsageSample{}, false
+	}
+
+	var totalVRAM, usedVRAM, utilization int64
+	validGPUs := 0
+	for _, gpu := range gpus {
+		if gpu.VRAMBytes <= 0 {
+			continue
+		}
+		validGPUs++
+		totalVRAM += gpu.VRAMBytes
+		freeVRAM := min(max(gpu.VRAMFreeBytes, 0), gpu.VRAMBytes)
+		usedVRAM += gpu.VRAMBytes - freeVRAM
+		utilization += int64(min(max(gpu.UtilizationPercent, 0), 100))
+	}
+	if totalVRAM == 0 {
+		return NodeUsageSample{}, false
+	}
+
+	return NodeUsageSample{
+		ObservedAt:  observedAt.UTC().Format(time.RFC3339),
+		GPUPercent:  int(utilization / int64(validGPUs)),
+		VRAMPercent: int(usedVRAM * 100 / totalVRAM),
+	}, true
 }
 
 // SetLocalGPUContribution records whether this Orchestrator should use its
@@ -511,6 +634,283 @@ func (a *OrchestratorApp) gatewayState() GatewayState {
 		state.Detail = "Ready to start " + filepath.Base(path) + "."
 	}
 	return state
+}
+
+// Models returns every GGUF installed in the Orchestrator's local library and
+// merges the gateway's worker state when the local endpoint is available.
+func (a *OrchestratorApp) Models() (*ModelLibrary, error) {
+	directory, err := defaultModelsDirectory()
+	if err != nil {
+		return nil, err
+	}
+	models, err := scanDesktopModels(directory)
+	if err != nil {
+		return nil, err
+	}
+	if states, err := fetchGatewayModelStates(); err == nil {
+		for i := range models {
+			if state, ok := states[models[i].ID]; ok {
+				models[i].State = state.State
+				models[i].Nodes = state.Nodes
+				models[i].UpdatedAt = state.UpdatedAt
+				models[i].Detail = state.Detail
+			}
+		}
+	}
+	a.mu.Lock()
+	download := a.modelDownload
+	a.mu.Unlock()
+	return &ModelLibrary{Directory: directory, Models: models, Download: download}, nil
+}
+
+// LoadModel explicitly keeps a selected installed GGUF resident in the local
+// gateway. Its layers are placed by tether-api across the current GPU mesh.
+func (a *OrchestratorApp) LoadModel(modelID string) error {
+	if strings.TrimSpace(modelID) == "" {
+		return fmt.Errorf("choose an installed model to load")
+	}
+	if err := a.ensureGateway(); err != nil {
+		return err
+	}
+	return a.gatewayModelAction(modelID, "load")
+}
+
+func (a *OrchestratorApp) UnloadModel(modelID string) error {
+	if strings.TrimSpace(modelID) == "" {
+		return fmt.Errorf("choose a loaded model to unload")
+	}
+	return a.gatewayModelAction(modelID, "unload")
+}
+
+// DownloadGPTOSS20B downloads the official ggml-org MXFP4 GGUF into the same
+// local model directory the gateway scans. The partial file is never exposed
+// as installed until the complete download has been atomically renamed.
+func (a *OrchestratorApp) DownloadGPTOSS20B() error {
+	directory, err := defaultModelsDirectory()
+	if err != nil {
+		return err
+	}
+	destination := filepath.Join(directory, gptOSS20BFilename)
+	if info, err := os.Stat(destination); err == nil && info.Size() >= 12_109_566_624 {
+		return fmt.Errorf("%s is already installed", gptOSS20BFilename)
+	}
+	a.mu.Lock()
+	if a.modelDownload.State == "downloading" {
+		a.mu.Unlock()
+		return fmt.Errorf("a model download is already in progress")
+	}
+	a.modelDownload = ModelDownload{ID: strings.TrimSuffix(gptOSS20BFilename, filepath.Ext(gptOSS20BFilename)), Filename: gptOSS20BFilename, State: "downloading", Detail: "Connecting to Hugging Face."}
+	a.mu.Unlock()
+	go a.downloadGPTOSS20B(directory, destination)
+	return nil
+}
+
+func (a *OrchestratorApp) downloadGPTOSS20B(directory, destination string) {
+	partial := destination + ".partial"
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		a.setModelDownloadFailed(err)
+		return
+	}
+	var offset int64
+	if info, err := os.Stat(partial); err == nil {
+		offset = info.Size()
+	}
+	req, err := http.NewRequest(http.MethodGet, gptOSS20BDownloadURL, nil)
+	if err != nil {
+		a.setModelDownloadFailed(err)
+		return
+	}
+	if offset > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
+	}
+	response, err := (&http.Client{}).Do(req)
+	if err != nil {
+		a.setModelDownloadFailed(fmt.Errorf("downloading %s: %w", gptOSS20BFilename, err))
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent {
+		a.setModelDownloadFailed(fmt.Errorf("downloading %s: server returned %d", gptOSS20BFilename, response.StatusCode))
+		return
+	}
+	if response.StatusCode == http.StatusOK {
+		offset = 0
+	}
+	file, err := os.OpenFile(partial, os.O_CREATE|os.O_WRONLY|map[bool]int{true: os.O_APPEND, false: os.O_TRUNC}[offset > 0], 0600)
+	if err != nil {
+		a.setModelDownloadFailed(err)
+		return
+	}
+	defer file.Close()
+	total := response.ContentLength
+	if total >= 0 {
+		total += offset
+	}
+	a.setModelDownloadProgress(offset, total, "Downloading the official GGUF from Hugging Face.")
+	buffer := make([]byte, 1024*1024)
+	written := offset
+	for {
+		count, readErr := response.Body.Read(buffer)
+		if count > 0 {
+			if _, err := file.Write(buffer[:count]); err != nil {
+				a.setModelDownloadFailed(err)
+				return
+			}
+			written += int64(count)
+			a.setModelDownloadProgress(written, total, "Downloading the official GGUF from Hugging Face.")
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			a.setModelDownloadFailed(readErr)
+			return
+		}
+	}
+	if err := file.Close(); err != nil {
+		a.setModelDownloadFailed(err)
+		return
+	}
+	if err := os.Rename(partial, destination); err != nil {
+		a.setModelDownloadFailed(err)
+		return
+	}
+	a.mu.Lock()
+	a.modelDownload = ModelDownload{ID: strings.TrimSuffix(gptOSS20BFilename, filepath.Ext(gptOSS20BFilename)), Filename: gptOSS20BFilename, State: "complete", Bytes: written, TotalBytes: total, Detail: "Installed in the local model library."}
+	a.mu.Unlock()
+	if a.gatewayState().Running {
+		_ = a.refreshGatewayModels()
+	}
+}
+
+func (a *OrchestratorApp) setModelDownloadProgress(written, total int64, detail string) {
+	a.mu.Lock()
+	a.modelDownload.Bytes = written
+	a.modelDownload.TotalBytes = total
+	a.modelDownload.Detail = detail
+	a.mu.Unlock()
+}
+
+func (a *OrchestratorApp) setModelDownloadFailed(err error) {
+	a.mu.Lock()
+	a.modelDownload.State = "failed"
+	a.modelDownload.Detail = err.Error()
+	a.mu.Unlock()
+}
+
+func (a *OrchestratorApp) ensureGateway() error {
+	if !a.gatewayState().Running {
+		if err := a.StartGateway(); err != nil {
+			return err
+		}
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := fetchGatewayModelStates(); err == nil {
+			return a.refreshGatewayModels()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("the local model gateway did not become ready")
+}
+
+func (a *OrchestratorApp) gatewayModelAction(modelID, action string) error {
+	endpoint := modelGatewayURL + "/api/v1/models/" + url.PathEscape(modelID) + "/" + action
+	request, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	response, err := (&http.Client{Timeout: 10 * time.Minute}).Do(request)
+	if err != nil {
+		return fmt.Errorf("contacting the local model gateway: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+		return fmt.Errorf("model %s failed: %s", action, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func (a *OrchestratorApp) refreshGatewayModels() error {
+	request, err := http.NewRequest(http.MethodPost, modelGatewayURL+"/api/v1/models/refresh", nil)
+	if err != nil {
+		return err
+	}
+	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("refreshing the model library returned %d", response.StatusCode)
+	}
+	return nil
+}
+
+type gatewayModelState struct {
+	Model     string   `json:"model"`
+	State     string   `json:"state"`
+	Nodes     []string `json:"nodes"`
+	UpdatedAt string   `json:"updatedAt"`
+	Detail    string   `json:"detail"`
+}
+
+func fetchGatewayModelStates() (map[string]gatewayModelState, error) {
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Get(modelGatewayURL + "/api/v1/model-states")
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("model-state endpoint returned %d", response.StatusCode)
+	}
+	var payload struct {
+		Models []gatewayModelState `json:"models"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	states := make(map[string]gatewayModelState, len(payload.Models))
+	for _, state := range payload.Models {
+		states[state.Model] = state
+	}
+	return states, nil
+}
+
+func defaultModelsDirectory() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locating the local model directory: %w", err)
+	}
+	return filepath.Join(home, "models"), nil
+}
+
+func scanDesktopModels(directory string) ([]DesktopModel, error) {
+	models := make([]DesktopModel, 0)
+	err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".gguf") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		filename := entry.Name()
+		models = append(models, DesktopModel{ID: strings.TrimSuffix(filename, filepath.Ext(filename)), Filename: filename, Path: path, SizeBytes: info.Size(), State: "unloaded"})
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return models, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scanning model library %q: %w", directory, err)
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models, nil
 }
 
 func (a *OrchestratorApp) localBackendState(config orchestratorconfig.Config) BackendState {

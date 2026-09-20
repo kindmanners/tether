@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"tether/internal/agent"
 	"tether/internal/registry"
@@ -13,6 +14,25 @@ import (
 
 type fakeCommandClient struct {
 	calls []string
+}
+
+func TestAggregateNodeUsage(t *testing.T) {
+	sample, ok := aggregateNodeUsage(time.Date(2026, time.September, 20, 12, 0, 0, 0, time.UTC), []agent.GPUCapability{
+		{VRAMBytes: 16, VRAMFreeBytes: 4, UtilizationPercent: 40},
+		{VRAMBytes: 8, VRAMFreeBytes: 6, UtilizationPercent: 20},
+	})
+	if !ok {
+		t.Fatal("aggregateNodeUsage returned no sample")
+	}
+	if sample.GPUPercent != 30 {
+		t.Errorf("GPUPercent = %d, want 30", sample.GPUPercent)
+	}
+	if sample.VRAMPercent != 58 {
+		t.Errorf("VRAMPercent = %d, want 58", sample.VRAMPercent)
+	}
+	if sample.ObservedAt != "2026-09-20T12:00:00Z" {
+		t.Errorf("ObservedAt = %q", sample.ObservedAt)
+	}
 }
 
 func (c *fakeCommandClient) StartRPCServer(addr string, port int) (*agent.StatusResult, error) {

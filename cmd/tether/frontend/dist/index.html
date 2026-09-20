@@ -54,7 +54,12 @@
         <div><span>03</span><strong>Run</strong><p>Start each node’s local RPC server, then use the local API endpoint.</p></div>
       </section>
 
-      <section class="nodes-section reveal" aria-labelledby="nodes-heading">
+      <nav class="workspace-tabs reveal" aria-label="Orchestrator workspace" role="tablist">
+        <button id="cluster-tab" class="workspace-tab" data-tab="cluster" role="tab" aria-selected="true" aria-controls="cluster-panel">Cluster</button>
+        <button id="models-tab" class="workspace-tab" data-tab="models" role="tab" aria-selected="false" aria-controls="models-panel">Models</button>
+      </nav>
+
+      <section id="cluster-panel" class="nodes-section reveal" role="tabpanel" aria-labelledby="cluster-tab">
         <div class="section-title">
           <div><p class="eyebrow">Cluster</p><h2 id="nodes-heading">Inference nodes</h2></div>
           <div class="cluster-actions">
@@ -64,6 +69,16 @@
         </div>
         <div id="nodes" class="nodes" aria-live="polite"></div>
         <p id="allowlist" class="allowlist-path"></p>
+      </section>
+
+      <section id="models-panel" class="models-section reveal" role="tabpanel" aria-labelledby="models-tab" hidden>
+        <div class="section-title">
+          <div><p class="eyebrow">Library</p><h2>Models</h2></div>
+          <div class="node-toolbar"><button id="download-gpt-oss" class="secondary">Download gpt-oss-20b</button><button id="refresh-models" class="secondary">Refresh library</button></div>
+        </div>
+        <p id="model-directory" class="allowlist-path"></p>
+        <div id="model-download" aria-live="polite"></div>
+        <div id="models" class="models" aria-live="polite"></div>
       </section>
 
       <p id="notice" role="status" aria-live="polite"></p>

@@ -52,10 +52,11 @@ type errorResponse struct {
 // bootstrap. It is served only through the already-pinned mTLS channel; the
 // public tailnet never receives this report.
 type GPUCapability struct {
-	Name          string `json:"name"`
-	DriverVersion string `json:"driverVersion"`
-	VRAMBytes     int64  `json:"vramBytes"`
-	VRAMFreeBytes int64  `json:"vramFreeBytes,omitempty"`
+	Name               string `json:"name"`
+	DriverVersion      string `json:"driverVersion"`
+	VRAMBytes          int64  `json:"vramBytes"`
+	VRAMFreeBytes      int64  `json:"vramFreeBytes,omitempty"`
+	UtilizationPercent int    `json:"utilizationPercent,omitempty"`
 }
 
 // CapabilitiesResult is the small, machine-observed report used by the
@@ -237,7 +238,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 }
 
 func liveNvidiaGPUs() ([]GPUCapability, error) {
-	cmd := exec.Command("nvidia-smi", "--query-gpu=name,memory.total,memory.free,driver_version", "--format=csv,noheader,nounits")
+	cmd := exec.Command("nvidia-smi", "--query-gpu=name,memory.total,memory.free,utilization.gpu,driver_version", "--format=csv,noheader,nounits")
 	executil.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
@@ -247,7 +248,7 @@ func liveNvidiaGPUs() ([]GPUCapability, error) {
 	gpus := make([]GPUCapability, 0, len(lines))
 	for _, line := range lines {
 		fields := strings.Split(line, ",")
-		if len(fields) != 4 {
+		if len(fields) != 5 {
 			return nil, fmt.Errorf("unexpected nvidia-smi row %q", line)
 		}
 		totalMiB, err := strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 64)
@@ -258,7 +259,11 @@ func liveNvidiaGPUs() ([]GPUCapability, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing free VRAM: %w", err)
 		}
-		gpus = append(gpus, GPUCapability{Name: strings.TrimSpace(fields[0]), DriverVersion: strings.TrimSpace(fields[3]), VRAMBytes: totalMiB * 1024 * 1024, VRAMFreeBytes: freeMiB * 1024 * 1024})
+		utilization, err := strconv.Atoi(strings.TrimSpace(fields[3]))
+		if err != nil {
+			return nil, fmt.Errorf("parsing GPU utilization: %w", err)
+		}
+		gpus = append(gpus, GPUCapability{Name: strings.TrimSpace(fields[0]), DriverVersion: strings.TrimSpace(fields[4]), VRAMBytes: totalMiB * 1024 * 1024, VRAMFreeBytes: freeMiB * 1024 * 1024, UtilizationPercent: utilization})
 	}
 	return gpus, nil
 }

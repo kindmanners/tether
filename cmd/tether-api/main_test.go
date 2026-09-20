@@ -1,8 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"tether/internal/placement"
@@ -83,5 +87,97 @@ func TestScanGatewayModels(t *testing.T) {
 	}
 	if len(models) != 2 || models["one"] == "" || models["two"] == "" {
 		t.Fatalf("unexpected model library: %#v", models)
+	}
+}
+
+func TestModelManagementRoutesRequireAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	gateway, err := newGateway(gatewayConfig{modelsDir: dir, apiKey: "test-api-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		method      string
+		path        string
+		validStatus int
+	}{
+		{name: "states", method: http.MethodGet, path: "/api/v1/model-states", validStatus: http.StatusOK},
+		{name: "refresh", method: http.MethodPost, path: "/api/v1/models/refresh", validStatus: http.StatusOK},
+		{name: "load", method: http.MethodPost, path: "/api/v1/models/example/load", validStatus: http.StatusServiceUnavailable},
+		{name: "unload", method: http.MethodPost, path: "/api/v1/models/example/unload", validStatus: http.StatusServiceUnavailable},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			for _, authorization := range []string{"", "Bearer wrong-key"} {
+				req := httptest.NewRequest(test.method, test.path, nil)
+				if authorization != "" {
+					req.Header.Set("Authorization", authorization)
+				}
+				recorder := httptest.NewRecorder()
+				gateway.ServeHTTP(recorder, req)
+				if recorder.Code != http.StatusUnauthorized {
+					t.Fatalf("authorization %q returned %d, want %d", authorization, recorder.Code, http.StatusUnauthorized)
+				}
+				if got := recorder.Header().Get("WWW-Authenticate"); got != "Bearer" {
+					t.Fatalf("authorization %q WWW-Authenticate = %q, want Bearer", authorization, got)
+				}
+			}
+
+			req := httptest.NewRequest(test.method, test.path, nil)
+			req.Header.Set("Authorization", "Bearer test-api-key")
+			recorder := httptest.NewRecorder()
+			gateway.ServeHTTP(recorder, req)
+			if recorder.Code != test.validStatus {
+				t.Fatalf("valid API key returned %d, want %d", recorder.Code, test.validStatus)
+			}
+		})
+	}
+}
+
+func TestRefreshAndListModelsAreConcurrentSafe(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.gguf"), []byte("GGUF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := newGateway(gatewayConfig{modelsDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(gateway)
+	defer server.Close()
+
+	const requests = 100
+	var group sync.WaitGroup
+	errs := make(chan error, 2*requests)
+	client := server.Client()
+	request := func(method, path string) {
+		defer group.Done()
+		req, err := http.NewRequest(method, server.URL+path, nil)
+		if err != nil {
+			errs <- err
+			return
+		}
+		response, err := client.Do(req)
+		if err != nil {
+			errs <- err
+			return
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			errs <- fmt.Errorf("%s %s returned status %d, want %d", method, path, response.StatusCode, http.StatusOK)
+		}
+	}
+	for range requests {
+		group.Add(2)
+		go request(http.MethodGet, "/v1/models")
+		go request(http.MethodPost, "/api/v1/models/refresh")
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
 	}
 }
