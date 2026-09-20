@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"tether/internal/executil"
 )
 
 const Interval = 10 * time.Minute
@@ -79,12 +81,16 @@ func Delete() error {
 	return nil
 }
 
-// Ping performs exactly one bounded Tailnet-layer ping. It avoids shell
-// interpretation and is safe to run in a background heartbeat loop.
-func Ping(ctx context.Context, hostname string) error {
-	output, err := exec.CommandContext(ctx, "tailscale", "ping", "--c=1", "--timeout=5s", hostname).CombinedOutput()
+// Ping performs exactly one bounded Tailnet-layer ping and returns the elapsed
+// time until Tailscale reports its response. It avoids shell interpretation and
+// is safe to run in a background heartbeat loop.
+func Ping(ctx context.Context, hostname string) (time.Duration, error) {
+	started := time.Now()
+	command := exec.CommandContext(ctx, "tailscale", "ping", "--c=1", "--timeout=5s", hostname)
+	executil.HideWindow(command)
+	output, err := command.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("tailscale ping %s: %w: %s", hostname, err, strings.TrimSpace(string(output)))
+		return 0, fmt.Errorf("tailscale ping %s: %w: %s", hostname, err, strings.TrimSpace(string(output)))
 	}
-	return nil
+	return time.Since(started), nil
 }

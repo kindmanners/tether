@@ -191,7 +191,7 @@ func serve(identity *certs.Identity, hostname string) error {
 func terminalHeartbeat(ctx context.Context, target string) {
 	ping := func() {
 		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := heartbeat.Ping(pingCtx, target)
+		_, err := heartbeat.Ping(pingCtx, target)
 		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "tether-agent: Orchestrator heartbeat failed: %v\n", err)

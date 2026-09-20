@@ -394,7 +394,9 @@ func liveGPUStatus() ([]AgentGPUStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	output, err := exec.Command(path, "--query-gpu=name,memory.total,memory.free,utilization.gpu,driver_version", "--format=csv,noheader,nounits").Output()
+	command := exec.Command(path, "--query-gpu=name,memory.total,memory.free,utilization.gpu,driver_version", "--format=csv,noheader,nounits")
+	executil.HideWindow(command)
+	output, err := command.Output()
 	if err != nil {
 		return nil, err
 	}
@@ -852,13 +854,13 @@ func (a *AgentApp) runHeartbeat(ctx context.Context) {
 	}
 	ping := func() {
 		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := heartbeat.Ping(pingCtx, target)
+		latency, err := heartbeat.Ping(pingCtx, target)
 		cancel()
 		a.mu.Lock()
 		if err != nil {
 			a.heartbeatDetail = "Orchestrator heartbeat failed: " + err.Error()
 		} else {
-			a.heartbeatDetail = "Orchestrator heartbeat to " + target + " succeeded at " + time.Now().Format(time.Kitchen)
+			a.heartbeatDetail = fmt.Sprintf("Orchestrator heartbeat to %s succeeded in %dms at %s", target, latency.Milliseconds(), time.Now().Format(time.Kitchen))
 		}
 		a.mu.Unlock()
 	}
