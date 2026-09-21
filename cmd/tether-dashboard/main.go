@@ -20,6 +20,7 @@ import (
 
 	"tether/internal/agent"
 	"tether/internal/certs"
+	"tether/internal/httpserver"
 	"tether/internal/registry"
 	"tether/internal/trust"
 )
@@ -95,8 +96,10 @@ func main() {
 	mux.HandleFunc("/api/v1/dashboard", server.handleDashboard)
 	mux.Handle("/", http.FileServer(http.Dir(*staticDir)))
 
+	httpServer := &http.Server{Addr: *listen, Handler: mux, WriteTimeout: 30 * time.Second}
+	httpserver.Apply(httpServer)
 	log.Printf("Tether dashboard listening on http://%s", *listen)
-	if err := http.ListenAndServe(*listen, mux); err != nil {
+	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }

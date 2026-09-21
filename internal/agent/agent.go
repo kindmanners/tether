@@ -25,6 +25,7 @@ import (
 
 	"tether/internal/config"
 	"tether/internal/executil"
+	"tether/internal/httpserver"
 	"tether/internal/process"
 )
 
@@ -111,10 +112,12 @@ func (s *Server) Start(ctx context.Context, addr string, tlsConfig *tls.Config) 
 	mux.HandleFunc("/capabilities", s.handleCapabilities)
 
 	httpServer := &http.Server{
-		Addr:      addr,
-		Handler:   mux,
-		TLSConfig: tlsConfig,
+		Addr:         addr,
+		Handler:      mux,
+		TLSConfig:    tlsConfig,
+		WriteTimeout: 30 * time.Second,
 	}
+	httpserver.Apply(httpServer)
 
 	serverErrCh := make(chan error, 1)
 	go func() {

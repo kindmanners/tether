@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"tether/internal/executil"
 	"tether/internal/placement"
 )
 
@@ -34,6 +35,7 @@ type gatewayConfig struct {
 	localGPU           bool
 	modelOverhead      float64
 	kvBytesPerToken    int64
+	requestShutdown    func()
 }
 
 type modelWorker struct {
@@ -128,6 +130,21 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		g.writeStates(w)
+		return
+	}
+	if r.URL.Path == "/api/v1/internal/shutdown" {
+		if r.Method != http.MethodPost {
+			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
+			return
+		}
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err != nil || !isLoopbackHost(host) {
+			http.Error(w, "shutdown is available only from loopback", http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		if g.cfg.requestShutdown != nil {
+			go g.cfg.requestShutdown()
+		}
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1/models/") {
@@ -284,7 +301,7 @@ func (g *gateway) acquire(modelID string) (*modelWorker, error) {
 	// Another same-model request may have completed the expensive launch first.
 	if existing := g.workerForModelLocked(modelID); existing != nil {
 		g.mu.Unlock()
-		_ = worker.cmd.Process.Kill()
+		_ = executil.KillProcessTree(worker.cmd)
 		_, _ = worker.cmd.Process.Wait()
 		return g.acquire(modelID)
 	}
@@ -361,7 +378,7 @@ func (g *gateway) load(modelID string) error {
 	g.mu.Lock()
 	if existing := g.workerForModelLocked(modelID); existing != nil {
 		g.mu.Unlock()
-		_ = worker.cmd.Process.Kill()
+		_ = executil.KillProcessTree(worker.cmd)
 		_, _ = worker.cmd.Process.Wait()
 		return g.load(modelID)
 	}
@@ -427,9 +444,7 @@ func (g *gateway) unload(worker *modelWorker) {
 	worker.state = "unloading"
 	g.recordLocked(worker, "")
 	g.mu.Unlock()
-	if worker.cmd.Process != nil {
-		_ = worker.cmd.Process.Kill()
-	}
+	_ = executil.KillProcessTree(worker.cmd)
 	_, _ = worker.cmd.Process.Wait()
 	g.mu.Lock()
 	if g.workers[worker.key] == worker {
@@ -452,12 +467,13 @@ func (g *gateway) launch(modelID, modelPath string, plan placement.Plan) (*model
 		args = append(args, "--rpc", strings.Join(endpoints, ","))
 	}
 	cmd := exec.Command(g.cfg.llamaServer, args...)
+	executil.IsolateProcessTree(cmd)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting model worker: %w", err)
 	}
 	if err := waitForWorker(address, cmd, g.cfg.workerStartTimeout); err != nil {
-		_ = cmd.Process.Kill()
+		_ = executil.KillProcessTree(cmd)
 		_, _ = cmd.Process.Wait()
 		return nil, err
 	}
@@ -525,7 +541,7 @@ func (g *gateway) shutdown(ctx context.Context) {
 	g.mu.Unlock()
 	for _, worker := range workers {
 		if worker.cmd.Process != nil {
-			_ = worker.cmd.Process.Kill()
+			_ = executil.KillProcessTree(worker.cmd)
 		}
 	}
 	for _, worker := range workers {

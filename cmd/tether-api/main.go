@@ -23,6 +23,7 @@ import (
 
 	"tether/internal/agent"
 	"tether/internal/certs"
+	"tether/internal/httpserver"
 	"tether/internal/registry"
 	"tether/internal/trust"
 )
@@ -85,15 +86,23 @@ func main() {
 		}
 	}
 
+	shutdownRequested := make(chan struct{}, 1)
 	gateway, err := newGateway(gatewayConfig{
 		modelsDir: *modelsDir, llamaServer: *llamaServer, rpcMode: *rpc, allowlistPath: *allowlistPath,
 		apiKey: *apiKey, ctxSize: *ctxSize, parallel: *parallel, idleTimeout: *idleUnload, workerStartTimeout: *workerStartTimeout, localGPU: localGPU,
 		modelOverhead: *modelOverhead, kvBytesPerToken: *kvBytesPerToken,
+		requestShutdown: func() {
+			select {
+			case shutdownRequested <- struct{}{}:
+			default:
+			}
+		},
 	})
 	if err != nil {
 		log.Fatalf("loading model library: %v", err)
 	}
-	server := &http.Server{Addr: *listen, Handler: gateway, ReadHeaderTimeout: 10 * time.Second}
+	server := &http.Server{Addr: *listen, Handler: gateway}
+	httpserver.Apply(server)
 	serverErr := make(chan error, 1)
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -118,11 +127,13 @@ func main() {
 	case err := <-serverErr:
 		log.Fatalf("Tether API stopped: %v", err)
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = server.Shutdown(shutdownCtx)
-		gateway.shutdown(shutdownCtx)
+	case <-shutdownRequested:
+		log.Printf("Tether API received local shutdown request")
 	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = server.Shutdown(shutdownCtx)
+	gateway.shutdown(shutdownCtx)
 }
 
 func llamaServerHasCUDA(path string) (bool, error) {

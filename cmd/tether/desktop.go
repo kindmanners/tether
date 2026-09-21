@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,24 +34,32 @@ import (
 // discovery, pairing and mTLS control path. It deliberately exposes a small
 // set of actions rather than a general remote-command facility.
 type OrchestratorApp struct {
-	allowlistPath string
-	configPath    string
-	mu            sync.Mutex
-	gateway       *exec.Cmd
-	preparing     bool
-	prepareDetail string
-	prepareLog    string
-	progressPath  string
-	monitorCancel context.CancelFunc
-	usageHistory  map[string][]NodeUsageSample
-	modelDownload ModelDownload
+	allowlistPath  string
+	configPath     string
+	mu             sync.Mutex
+	gateway        *exec.Cmd
+	preparing      bool
+	prepareDetail  string
+	prepareLog     string
+	progressPath   string
+	monitorCancel  context.CancelFunc
+	usageHistory   map[string][]NodeUsageSample
+	modelDownload  ModelDownload
+	downloadCancel context.CancelFunc
+	gatewayDone    chan struct{}
 }
 
 const (
-	defaultAgentPort     = 7420
-	modelGatewayURL      = "http://127.0.0.1:11435"
-	gptOSS20BFilename    = "gpt-oss-20b-MXFP4.gguf"
-	gptOSS20BDownloadURL = "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf"
+	defaultAgentPort  = 7420
+	modelGatewayURL   = "http://127.0.0.1:11435"
+	gptOSS20BFilename = "gpt-oss-20b-MXFP4.gguf"
+	// Pin an immutable Hugging Face revision. The size and SHA-256 are the
+	// publisher's LFS metadata for this exact artifact, not a mutable `main`.
+	gptOSS20BDownloadURL          = "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/b97cbb20d1995efd41dce8c4dd1ddf86e8db375b/gpt-oss-20b-MXFP4.gguf"
+	gptOSS20BExpectedSize   int64 = 12_109_566_624
+	gptOSS20BSHA256               = "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+	nodeRefreshBudget             = 12 * time.Second
+	maxConcurrentNodeProbes       = 4
 )
 
 type OrchestratorSnapshot struct {
@@ -118,6 +127,9 @@ type ModelDownload struct {
 	Bytes      int64  `json:"bytes"`
 	TotalBytes int64  `json:"totalBytes"`
 	Detail     string `json:"detail,omitempty"`
+	Source     string `json:"source,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	CanCancel  bool   `json:"canCancel,omitempty"`
 }
 
 // BackendState is the local llama.cpp prerequisite for serving models. It is
@@ -171,13 +183,13 @@ func (a *OrchestratorApp) startup(context.Context) {
 
 func (a *OrchestratorApp) shutdown(context.Context) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.monitorCancel != nil {
 		a.monitorCancel()
 		a.monitorCancel = nil
 	}
-	if a.gateway != nil && a.gateway.Process != nil {
-		_ = a.gateway.Process.Kill()
+	a.mu.Unlock()
+	if err := a.stopGateway(); err != nil {
+		log.Printf("orchestrator: stopping gateway: %v", err)
 	}
 }
 
@@ -213,8 +225,9 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 		nodes = filtered
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Hostname < nodes[j].Hostname })
-	view := make([]DesktopNode, 0, len(nodes))
-	for _, node := range nodes {
+	view := make([]DesktopNode, len(nodes))
+	probeIndexes := make([]int, 0, len(nodes))
+	for index, node := range nodes {
 		item := DesktopNode{
 			Hostname: node.Hostname,
 			Tailnet:  node.Status.String(),
@@ -224,47 +237,31 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 		_, item.Paired, err = trust.Get(node.Hostname)
 		if err != nil {
 			item.Detail = "Pairing needs attention: " + err.Error()
-			view = append(view, item)
+			view[index] = item
 			continue
 		}
 		if node.Status != registry.StatusOnline {
 			item.Detail = "This machine is not currently reachable through Tailscale."
-			view = append(view, item)
+			view[index] = item
 			continue
 		}
 		if !item.Paired {
 			item.Detail = "Open Tether Agent on this machine, then enter its one-time code here."
-			view = append(view, item)
+			view[index] = item
 			continue
 		}
-		tlsConfig, tlsErr := trust.PinnedTLSConfig(identity.TLSCertificate(), node.Hostname, false)
-		if tlsErr != nil {
+		if _, tlsErr := trust.PinnedTLSConfig(identity.TLSCertificate(), node.Hostname, false); tlsErr != nil {
 			item.Detail = "Pairing needs attention: " + tlsErr.Error()
-			view = append(view, item)
+			view[index] = item
 			continue
 		}
-		checkedAt := time.Now().UTC()
-		startedAt := time.Now()
-		client := agent.NewClient(tlsConfig)
-		status, statusErr := client.GetStatus(agentAddress(node))
-		item.PingMS = time.Since(startedAt).Milliseconds()
-		item.PingAt = checkedAt.Format(time.RFC3339)
-		if statusErr != nil {
-			item.AgentStatus = "Unreachable"
-			item.Detail = statusErr.Error()
-			log.Printf("orchestrator: agent heartbeat host=%q timestamp=%s latency_ms=%d error=%q", node.Hostname, item.PingAt, item.PingMS, statusErr)
-		} else {
-			item.AgentStatus = status.Status
-			item.Detail = status.LastError
-			if capabilities, capabilitiesErr := client.GetCapabilities(agentAddress(node)); capabilitiesErr == nil {
-				item.GPUHistory = a.recordNodeUsage(node.Hostname, checkedAt, capabilities.GPUs)
-			} else {
-				item.GPUHistory = a.nodeUsageHistory(node.Hostname)
-			}
-			log.Printf("orchestrator: agent heartbeat host=%q timestamp=%s latency_ms=%d status=%q", node.Hostname, item.PingAt, item.PingMS, status.Status)
-		}
-		view = append(view, item)
+		item.AgentStatus = "Checking"
+		item.Detail = "Checking pinned Agent status…"
+		item.GPUHistory = a.nodeUsageHistory(node.Hostname)
+		view[index] = item
+		probeIndexes = append(probeIndexes, index)
 	}
+	a.probeNodes(view, nodes, probeIndexes, identity)
 
 	return &OrchestratorSnapshot{
 		AllowlistPath:      a.allowlistPath,
@@ -273,6 +270,84 @@ func (a *OrchestratorApp) Snapshot() (*OrchestratorSnapshot, error) {
 		Nodes:              view,
 		Gateway:            a.gatewayState(),
 	}, nil
+}
+
+// probeNodes checks paired Agents in a bounded pool. One refresh has a fixed
+// budget, so unavailable nodes cannot add ten seconds each to the dashboard.
+func (a *OrchestratorApp) probeNodes(view []DesktopNode, nodes []*registry.Node, indexes []int, identity *certs.Identity) {
+	ctx, cancel := context.WithTimeout(context.Background(), nodeRefreshBudget)
+	defer cancel()
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	count := min(maxConcurrentNodeProbes, len(indexes))
+	for range count {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					node := nodes[index]
+					item := view[index]
+					tlsConfig, err := trust.PinnedTLSConfig(identity.TLSCertificate(), node.Hostname, false)
+					if err != nil {
+						item.AgentStatus = "Unreachable"
+						item.Detail = "Pairing needs attention: " + err.Error()
+						view[index] = item
+						continue
+					}
+					checkedAt, startedAt := time.Now().UTC(), time.Now()
+					client := agent.NewClient(tlsConfig)
+					status, statusErr := client.GetStatusContext(ctx, agentAddress(node))
+					item.PingMS = time.Since(startedAt).Milliseconds()
+					item.PingAt = checkedAt.Format(time.RFC3339)
+					if statusErr != nil {
+						item.AgentStatus = "Unreachable"
+						if ctx.Err() != nil {
+							item.Detail = "Refresh budget expired; try again."
+						} else {
+							item.Detail = statusErr.Error()
+						}
+						item.GPUHistory = a.nodeUsageHistory(node.Hostname)
+						log.Printf("orchestrator: agent heartbeat host=%q timestamp=%s latency_ms=%d error=%q", node.Hostname, item.PingAt, item.PingMS, statusErr)
+					} else {
+						item.AgentStatus, item.Detail = status.Status, status.LastError
+						if capabilities, capabilitiesErr := client.GetCapabilitiesContext(ctx, agentAddress(node)); capabilitiesErr == nil {
+							item.GPUHistory = a.recordNodeUsage(node.Hostname, checkedAt, capabilities.GPUs)
+						} else {
+							item.GPUHistory = a.nodeUsageHistory(node.Hostname)
+						}
+						log.Printf("orchestrator: agent heartbeat host=%q timestamp=%s latency_ms=%d status=%q", node.Hostname, item.PingAt, item.PingMS, status.Status)
+					}
+					view[index] = item
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, index := range indexes {
+			select {
+			case jobs <- index:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	workers.Wait()
+	if ctx.Err() != nil {
+		for _, index := range indexes {
+			if view[index].AgentStatus == "Checking" {
+				view[index].AgentStatus = "Stale"
+				view[index].Detail = "Refresh budget expired; last successful sample is retained."
+			}
+		}
+	}
 }
 
 const usageHistoryWindow = time.Minute
@@ -355,14 +430,13 @@ func (a *OrchestratorApp) SetLocalGPUContribution(enabled bool) error {
 
 	a.mu.Lock()
 	wasRunning := a.gateway != nil && a.gateway.Process != nil
-	if wasRunning {
-		_ = a.gateway.Process.Kill()
-		a.gateway = nil
-	}
 	a.mu.Unlock()
 	if wasRunning {
+		if err := a.stopGateway(); err != nil {
+			return fmt.Errorf("stopping gateway workers before changing the GPU setting: %w", err)
+		}
 		if err := a.StartGateway(); err != nil {
-			return fmt.Errorf("restarting the gateway with the new GPU setting: %w", err)
+			return fmt.Errorf("the GPU setting was saved, but restarting the gateway failed; use Start gateway to retry: %w", err)
 		}
 	}
 	return nil
@@ -594,20 +668,61 @@ func (a *OrchestratorApp) StartGateway() error {
 		arguments = append(arguments, "--local-gpu=false")
 	}
 	command := exec.Command(path, arguments...)
-	executil.HideWindow(command)
+	executil.IsolateProcessTree(command)
 	if err := command.Start(); err != nil {
 		return fmt.Errorf("starting local gateway: %w", err)
 	}
 	a.gateway = command
+	done := make(chan struct{})
+	a.gatewayDone = done
 	go func() {
 		_ = command.Wait()
 		a.mu.Lock()
 		if a.gateway == command {
 			a.gateway = nil
+			a.gatewayDone = nil
 		}
 		a.mu.Unlock()
+		close(done)
 	}()
 	return nil
+}
+
+// stopGateway asks tether-api to drain its model workers, then waits for the
+// gateway to exit. A forced process-tree termination is a bounded fallback so
+// a wedged gateway cannot strand llama-server workers or their GPU memory.
+func (a *OrchestratorApp) stopGateway() error {
+	a.mu.Lock()
+	command, done := a.gateway, a.gatewayDone
+	a.mu.Unlock()
+	if command == nil || command.Process == nil || done == nil {
+		return nil
+	}
+
+	request, err := http.NewRequest(http.MethodPost, modelGatewayURL+"/api/v1/internal/shutdown", nil)
+	if err == nil {
+		response, requestErr := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+		if requestErr == nil {
+			response.Body.Close()
+			err = nil
+		} else {
+			err = requestErr
+		}
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(12 * time.Second):
+		if killErr := executil.KillProcessTree(command); killErr != nil {
+			return fmt.Errorf("graceful shutdown timed out (%v); killing gateway process tree: %w", err, killErr)
+		}
+	}
+	select {
+	case <-done:
+		return nil
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("gateway process tree did not exit after forced termination")
+	}
 }
 
 func (a *OrchestratorApp) orchestratorConfig() (orchestratorconfig.Config, error) {
@@ -690,32 +805,95 @@ func (a *OrchestratorApp) DownloadGPTOSS20B() error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return err
+	}
 	destination := filepath.Join(directory, gptOSS20BFilename)
-	if info, err := os.Stat(destination); err == nil && info.Size() >= 12_109_566_624 {
-		return fmt.Errorf("%s is already installed", gptOSS20BFilename)
+	if _, err := os.Stat(destination); err == nil {
+		valid, verifyErr := verifyModelDownload(context.Background(), destination)
+		if verifyErr != nil {
+			return fmt.Errorf("verifying existing %s: %w", gptOSS20BFilename, verifyErr)
+		}
+		if valid {
+			return fmt.Errorf("%s is already installed and verified", gptOSS20BFilename)
+		}
+		return fmt.Errorf("existing %s is not the expected artifact; move it aside before retrying", gptOSS20BFilename)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking existing %s: %w", gptOSS20BFilename, err)
+	}
+	partial := destination + ".partial"
+	var offset int64
+	if info, err := os.Stat(partial); err == nil {
+		offset = info.Size()
+		if offset > gptOSS20BExpectedSize {
+			return fmt.Errorf("partial %s is larger than the expected download; remove it before retrying", gptOSS20BFilename)
+		}
+		if offset == gptOSS20BExpectedSize {
+			valid, verifyErr := verifyModelDownload(context.Background(), partial)
+			if verifyErr != nil {
+				return fmt.Errorf("verifying completed partial %s: %w", gptOSS20BFilename, verifyErr)
+			}
+			if valid {
+				if err := os.Rename(partial, destination); err != nil {
+					return fmt.Errorf("recovering verified %s: %w", gptOSS20BFilename, err)
+				}
+				a.markModelDownloadComplete(gptOSS20BExpectedSize)
+				if a.gatewayState().Running {
+					_ = a.refreshGatewayModels()
+				}
+				return nil
+			}
+			// The operator explicitly chose Retry. A full-size partial with a
+			// bad digest cannot be resumed safely, so restart it from zero.
+			if err := os.Truncate(partial, 0); err != nil {
+				return fmt.Errorf("resetting corrupt partial %s: %w", gptOSS20BFilename, err)
+			}
+			offset = 0
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking partial %s: %w", gptOSS20BFilename, err)
+	}
+	available, err := availableDiskBytes(directory)
+	if err != nil {
+		return err
+	}
+	required := gptOSS20BExpectedSize - offset + 1<<30 // retain 1 GiB working headroom.
+	if available < uint64(required) {
+		return fmt.Errorf("insufficient disk space for %s: need %s free (including headroom), have %s", gptOSS20BFilename, formatBytes(required), formatBytes(int64(available)))
 	}
 	a.mu.Lock()
 	if a.modelDownload.State == "downloading" {
 		a.mu.Unlock()
 		return fmt.Errorf("a model download is already in progress")
 	}
-	a.modelDownload = ModelDownload{ID: strings.TrimSuffix(gptOSS20BFilename, filepath.Ext(gptOSS20BFilename)), Filename: gptOSS20BFilename, State: "downloading", Detail: "Connecting to Hugging Face."}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.downloadCancel = cancel
+	a.modelDownload = ModelDownload{ID: strings.TrimSuffix(gptOSS20BFilename, filepath.Ext(gptOSS20BFilename)), Filename: gptOSS20BFilename, State: "downloading", Bytes: offset, TotalBytes: gptOSS20BExpectedSize, Source: gptOSS20BDownloadURL, SHA256: gptOSS20BSHA256, CanCancel: true, Detail: "Connecting to the verified Hugging Face artifact."}
 	a.mu.Unlock()
-	go a.downloadGPTOSS20B(directory, destination)
+	go a.downloadGPTOSS20B(ctx, directory, destination)
 	return nil
 }
 
-func (a *OrchestratorApp) downloadGPTOSS20B(directory, destination string) {
-	partial := destination + ".partial"
-	if err := os.MkdirAll(directory, 0700); err != nil {
-		a.setModelDownloadFailed(err)
-		return
+// CancelModelDownload stops an active transfer and retains its .partial file
+// for an explicit retry/resume. It never promotes unverified content.
+func (a *OrchestratorApp) CancelModelDownload() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.modelDownload.State != "downloading" || a.downloadCancel == nil {
+		return fmt.Errorf("no model download is in progress")
 	}
+	a.modelDownload.Detail = "Cancellation requested; preserving the verified partial progress."
+	a.downloadCancel()
+	return nil
+}
+
+func (a *OrchestratorApp) downloadGPTOSS20B(ctx context.Context, directory, destination string) {
+	partial := destination + ".partial"
 	var offset int64
 	if info, err := os.Stat(partial); err == nil {
 		offset = info.Size()
 	}
-	req, err := http.NewRequest(http.MethodGet, gptOSS20BDownloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, gptOSS20BDownloadURL, nil)
 	if err != nil {
 		a.setModelDownloadFailed(err)
 		return
@@ -723,8 +901,12 @@ func (a *OrchestratorApp) downloadGPTOSS20B(directory, destination string) {
 	if offset > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	response, err := (&http.Client{}).Do(req)
+	response, err := (&http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 30 * time.Second}}).Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			a.setModelDownloadCancelled()
+			return
+		}
 		a.setModelDownloadFailed(fmt.Errorf("downloading %s: %w", gptOSS20BFilename, err))
 		return
 	}
@@ -735,6 +917,9 @@ func (a *OrchestratorApp) downloadGPTOSS20B(directory, destination string) {
 	}
 	if response.StatusCode == http.StatusOK {
 		offset = 0
+	} else if !validContentRange(response.Header.Get("Content-Range"), offset) {
+		a.setModelDownloadFailed(fmt.Errorf("downloading %s: server returned an invalid resume range", gptOSS20BFilename))
+		return
 	}
 	file, err := os.OpenFile(partial, os.O_CREATE|os.O_WRONLY|map[bool]int{true: os.O_APPEND, false: os.O_TRUNC}[offset > 0], 0600)
 	if err != nil {
@@ -742,45 +927,75 @@ func (a *OrchestratorApp) downloadGPTOSS20B(directory, destination string) {
 		return
 	}
 	defer file.Close()
-	total := response.ContentLength
-	if total >= 0 {
-		total += offset
+	if response.ContentLength >= 0 && response.ContentLength+offset != gptOSS20BExpectedSize {
+		a.setModelDownloadFailed(fmt.Errorf("downloading %s: server advertised %s, want %s", gptOSS20BFilename, formatBytes(response.ContentLength+offset), formatBytes(gptOSS20BExpectedSize)))
+		return
 	}
-	a.setModelDownloadProgress(offset, total, "Downloading the official GGUF from Hugging Face.")
+	a.setModelDownloadProgress(offset, gptOSS20BExpectedSize, "Downloading the official GGUF from Hugging Face.")
 	buffer := make([]byte, 1024*1024)
 	written := offset
 	for {
 		count, readErr := response.Body.Read(buffer)
 		if count > 0 {
+			if written+int64(count) > gptOSS20BExpectedSize {
+				a.setModelDownloadFailed(fmt.Errorf("downloading %s: response exceeds expected size", gptOSS20BFilename))
+				return
+			}
 			if _, err := file.Write(buffer[:count]); err != nil {
 				a.setModelDownloadFailed(err)
 				return
 			}
 			written += int64(count)
-			a.setModelDownloadProgress(written, total, "Downloading the official GGUF from Hugging Face.")
+			a.setModelDownloadProgress(written, gptOSS20BExpectedSize, "Downloading the official GGUF from Hugging Face.")
 		}
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
+			if ctx.Err() != nil {
+				a.setModelDownloadCancelled()
+				return
+			}
 			a.setModelDownloadFailed(readErr)
 			return
 		}
 	}
+	if written != gptOSS20BExpectedSize {
+		a.setModelDownloadFailed(fmt.Errorf("downloading %s: truncated response (%s, want %s)", gptOSS20BFilename, formatBytes(written), formatBytes(gptOSS20BExpectedSize)))
+		return
+	}
 	if err := file.Close(); err != nil {
 		a.setModelDownloadFailed(err)
+		return
+	}
+	valid, err := verifyModelDownload(ctx, partial)
+	if err != nil {
+		if ctx.Err() != nil {
+			a.setModelDownloadCancelled()
+		} else {
+			a.setModelDownloadFailed(fmt.Errorf("verifying %s: %w", gptOSS20BFilename, err))
+		}
+		return
+	}
+	if !valid {
+		a.setModelDownloadFailed(fmt.Errorf("verifying %s: SHA-256 did not match the publisher's digest", gptOSS20BFilename))
 		return
 	}
 	if err := os.Rename(partial, destination); err != nil {
 		a.setModelDownloadFailed(err)
 		return
 	}
-	a.mu.Lock()
-	a.modelDownload = ModelDownload{ID: strings.TrimSuffix(gptOSS20BFilename, filepath.Ext(gptOSS20BFilename)), Filename: gptOSS20BFilename, State: "complete", Bytes: written, TotalBytes: total, Detail: "Installed in the local model library."}
-	a.mu.Unlock()
+	a.markModelDownloadComplete(written)
 	if a.gatewayState().Running {
 		_ = a.refreshGatewayModels()
 	}
+}
+
+func (a *OrchestratorApp) markModelDownloadComplete(bytes int64) {
+	a.mu.Lock()
+	a.downloadCancel = nil
+	a.modelDownload = ModelDownload{ID: strings.TrimSuffix(gptOSS20BFilename, filepath.Ext(gptOSS20BFilename)), Filename: gptOSS20BFilename, State: "complete", Bytes: bytes, TotalBytes: gptOSS20BExpectedSize, Source: gptOSS20BDownloadURL, SHA256: gptOSS20BSHA256, Detail: "Verified SHA-256 and installed in the local model library."}
+	a.mu.Unlock()
 }
 
 func (a *OrchestratorApp) setModelDownloadProgress(written, total int64, detail string) {
@@ -793,9 +1008,67 @@ func (a *OrchestratorApp) setModelDownloadProgress(written, total int64, detail 
 
 func (a *OrchestratorApp) setModelDownloadFailed(err error) {
 	a.mu.Lock()
+	a.downloadCancel = nil
 	a.modelDownload.State = "failed"
+	a.modelDownload.CanCancel = false
 	a.modelDownload.Detail = err.Error()
 	a.mu.Unlock()
+}
+
+func (a *OrchestratorApp) setModelDownloadCancelled() {
+	a.mu.Lock()
+	a.downloadCancel = nil
+	a.modelDownload.State = "cancelled"
+	a.modelDownload.CanCancel = false
+	a.modelDownload.Detail = "Cancelled. Partial download retained; choose Download again to resume."
+	a.mu.Unlock()
+}
+
+func validContentRange(value string, offset int64) bool {
+	parts := strings.Fields(value)
+	if len(parts) != 2 || parts[0] != "bytes" {
+		return false
+	}
+	start, _, found := strings.Cut(parts[1], "-")
+	if !found {
+		return false
+	}
+	return start == fmt.Sprint(offset) && strings.HasSuffix(parts[1], "/"+fmt.Sprint(gptOSS20BExpectedSize))
+}
+
+func verifyModelDownload(ctx context.Context, path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	buffer := make([]byte, 1024*1024)
+	var size int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		count, readErr := file.Read(buffer)
+		if count > 0 {
+			size += int64(count)
+			if _, err := hash.Write(buffer[:count]); err != nil {
+				return false, err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return false, readErr
+		}
+	}
+	return size == gptOSS20BExpectedSize && fmt.Sprintf("%x", hash.Sum(nil)) == gptOSS20BSHA256, nil
+}
+
+func formatBytes(value int64) string {
+	const gib = int64(1024 * 1024 * 1024)
+	return fmt.Sprintf("%.1f GiB", float64(value)/float64(gib))
 }
 
 func (a *OrchestratorApp) ensureGateway() error {

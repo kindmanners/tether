@@ -8,6 +8,8 @@ let pairingHost = '';
 let preparationRefresh;
 let telemetryRefresh;
 let celebratingHost = '';
+let latestState;
+let latestLibrary;
 
 function setTheme(theme) {
   const isDark = theme === 'dark';
@@ -103,9 +105,9 @@ function renderModelLibrary(library) {
   const downloadEl = document.querySelector('#model-download');
   if (download.state === 'downloading') {
     const progress = download.totalBytes > 0 ? `${formatBytes(download.bytes)} / ${formatBytes(download.totalBytes)}` : formatBytes(download.bytes);
-    downloadEl.innerHTML = `<p class="model-download"><strong>Downloading ${escapeHTML(download.filename)}</strong><span>${progress}</span><small>${escapeHTML(download.detail || '')}</small></p>`;
-  } else if (download.state === 'failed') {
-    downloadEl.innerHTML = `<p class="model-download error"><strong>Download failed</strong><small>${escapeHTML(download.detail || '')}</small></p>`;
+    downloadEl.innerHTML = `<p class="model-download"><strong>Downloading ${escapeHTML(download.filename)}</strong><span>${progress}</span><small>${escapeHTML(download.detail || '')}</small>${download.canCancel ? '<button class="secondary" data-cancel-download>Cancel download</button>' : ''}</p>`;
+  } else if (download.state === 'failed' || download.state === 'cancelled') {
+    downloadEl.innerHTML = `<p class="model-download error"><strong>Download ${escapeHTML(download.state)}</strong><small>${escapeHTML(download.detail || '')}</small><button class="secondary" data-retry-download>Retry / resume download</button></p>`;
   } else if (download.state === 'complete') {
     downloadEl.innerHTML = `<p class="model-download"><strong>${escapeHTML(download.filename)} installed</strong><span>${formatBytes(download.bytes)}</span></p>`;
   } else {
@@ -134,6 +136,8 @@ async function refresh({ quiet = false } = {}) {
   let library;
   try {
     [state, library] = await Promise.all([api().Snapshot(), api().Models()]);
+    latestState = state;
+    latestLibrary = library;
     const onlineCount = state.nodes.filter(node => node.tailnet === 'Online').length;
     const pairedCount = state.nodes.filter(node => node.paired).length;
     document.querySelector('#allowlist').textContent = state.allowlistPath ? `Allowlist: ${state.allowlistPath}` : '';
@@ -274,12 +278,31 @@ document.querySelector('#confirm-add').addEventListener('click', async event => 
 
 document.querySelector('#refresh').addEventListener('click', refresh);
 document.querySelector('#refresh-models').addEventListener('click', refresh);
-document.querySelector('#download-gpt-oss').addEventListener('click', async () => {
+async function startModelDownload() {
+	const destination = latestLibrary?.directory || 'the local model library';
+	const expected = formatBytes(12109566624);
+	const required = formatBytes(12109566624 + 1024 ** 3);
+	const confirmed = window.confirm(`Download gpt-oss-20b-MXFP4.gguf?\n\nSource: Hugging Face (ggml-org, pinned revision)\nSize: ${expected}\nDestination: ${destination}\nFree-space requirement: at least ${required} (includes 1 GiB working headroom)\n\nThe download is SHA-256 verified before installation. You can cancel and later resume it.`);
+	if (!confirmed) return;
   try {
     await api().DownloadGPTOSS20B();
     report('Downloading gpt-oss-20b into the local model library…');
     await refresh({ quiet: true });
   } catch (error) { report(error.message || String(error), true); }
+}
+document.querySelector('#download-gpt-oss').addEventListener('click', startModelDownload);
+document.querySelector('#model-download').addEventListener('click', async event => {
+	const button = event.target.closest('button');
+	if (!button) return;
+	try {
+		if (button.dataset.cancelDownload !== undefined) {
+			button.disabled = true;
+			await api().CancelModelDownload();
+			report('Cancelling model download; the partial file will remain available to resume.');
+			await refresh({ quiet: true });
+		}
+		if (button.dataset.retryDownload !== undefined) await startModelDownload();
+	} catch (error) { report(error.message || String(error), true); }
 });
 document.querySelectorAll('.workspace-tab').forEach(button => button.addEventListener('click', () => selectWorkspace(button.dataset.tab)));
 document.querySelector('#theme-toggle').addEventListener('click', () => {
@@ -294,6 +317,12 @@ document.querySelector('#start-gateway').addEventListener('click', async () => {
 document.querySelector('#toggle-local-gpu').addEventListener('click', async () => {
   try {
     const enabled = document.querySelector('#toggle-local-gpu').getAttribute('aria-pressed') !== 'true';
+	const activeModels = (latestLibrary?.models || []).filter(model => ['loaded', 'loading', 'idle-countdown', 'unloading'].includes(model.state)).map(model => model.id);
+	if (latestState?.gateway?.running) {
+		const affected = activeModels.length ? `Active models: ${activeModels.join(', ')}.` : 'The gateway has no loaded models, but active inference requests may still be interrupted.';
+		const confirmed = window.confirm(`Changing this GPU role restarts the local gateway and stops active inference.\n\n${affected}\n\nContinue?`);
+		if (!confirmed) return;
+	}
     report('Updating this Orchestrator’s GPU role…');
     await api().SetLocalGPUContribution(enabled);
     await refresh();

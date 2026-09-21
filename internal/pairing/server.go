@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"tether/internal/certs"
+	"tether/internal/httpserver"
 	"tether/internal/trust"
 )
 
@@ -31,6 +33,12 @@ const maxPairRequestBytes = 64 * 1024
 // Shutdown block indefinitely, which defeats the point of a time-boxed
 // pairing window.
 const shutdownTimeout = 5 * time.Second
+
+const (
+	maxPairConnections = 16
+	maxPairAttempts    = 5
+	pairAttemptWindow  = time.Minute
+)
 
 // pairRequest is the JSON body an Orchestrator sends to an Agent's /pair
 // endpoint. OrchestratorCertPEM is PEM-encoded (not raw DER) since JSON
@@ -83,6 +91,13 @@ type Server struct {
 	done                        bool
 	doneCh                      chan struct{}
 	orchestratorTailnetHostname string
+	connections                 map[net.Conn]struct{}
+	attempts                    map[string]pairAttempts
+}
+
+type pairAttempts struct {
+	started time.Time
+	count   int
 }
 
 // NewServer creates a pairing Server for a single pairing attempt, using
@@ -104,6 +119,8 @@ func NewServer(agentIdentity *certs.Identity, window time.Duration) (*Server, er
 		agentIdentity: agentIdentity,
 		window:        window,
 		doneCh:        make(chan struct{}),
+		connections:   make(map[net.Conn]struct{}),
+		attempts:      make(map[string]pairAttempts),
 	}, nil
 }
 
@@ -149,6 +166,9 @@ func (s *Server) Start(addr string) error {
 			Certificates: []tls.Certificate{s.agentIdentity.TLSCertificate()},
 		},
 	}
+	httpserver.Apply(httpServer)
+	httpServer.WriteTimeout = 30 * time.Second
+	httpServer.ConnState = s.limitConnections
 
 	windowTimer := time.AfterFunc(s.window, func() {
 		s.finish(fmt.Errorf("pairing window expired with no valid attempt"))
@@ -204,6 +224,11 @@ func (s *Server) Start(addr string) error {
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "only POST is supported")
+		return
+	}
+	if !s.allowAttempt(r.RemoteAddr) {
+		w.Header().Set("Retry-After", "60")
+		writeError(w, http.StatusTooManyRequests, "too many pairing attempts; wait and try again")
 		return
 	}
 
@@ -292,6 +317,52 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("pairing: successfully paired with orchestrator %q", orchestratorHostname)
 	s.finish(nil)
+}
+
+// limitConnections caps the pairing window's exposure before a request is
+// even parsed. Header and read deadlines handle slow clients; this bound keeps
+// a peer from consuming unbounded sockets during the unauthenticated phase.
+func (s *Server) limitConnections(conn net.Conn, state http.ConnState) {
+	s.mu.Lock()
+	closeConnection := false
+	switch state {
+	case http.StateNew:
+		if len(s.connections) >= maxPairConnections {
+			closeConnection = true
+		} else {
+			s.connections[conn] = struct{}{}
+		}
+	case http.StateClosed, http.StateHijacked:
+		delete(s.connections, conn)
+	}
+	s.mu.Unlock()
+	if closeConnection {
+		_ = conn.Close()
+	}
+}
+
+// allowAttempt permits a few code submissions per source each minute. The
+// pairing code remains retryable for a human typo, while online guessing is
+// rate limited and the small map is bounded by the short pairing window.
+func (s *Server) allowAttempt(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attempt := s.attempts[host]
+	if attempt.started.IsZero() || now.Sub(attempt.started) >= pairAttemptWindow {
+		attempt = pairAttempts{started: now}
+	}
+	if attempt.count >= maxPairAttempts {
+		s.attempts[host] = attempt
+		return false
+	}
+	attempt.count++
+	s.attempts[host] = attempt
+	return true
 }
 
 // finish records the final result and signals doneCh exactly once —

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"tether/internal/placement"
 )
@@ -134,6 +135,35 @@ func TestModelManagementRoutesRequireAPIKey(t *testing.T) {
 				t.Fatalf("valid API key returned %d, want %d", recorder.Code, test.validStatus)
 			}
 		})
+	}
+}
+
+func TestLocalShutdownRouteRequiresLoopbackAndSignalsGateway(t *testing.T) {
+	dir := t.TempDir()
+	called := make(chan struct{}, 1)
+	gateway, err := newGateway(gatewayConfig{modelsDir: dir, requestShutdown: func() { called <- struct{}{} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		remote string
+		want   int
+	}{
+		{remote: "100.64.0.1:50000", want: http.StatusForbidden},
+		{remote: "127.0.0.1:50000", want: http.StatusAccepted},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/shutdown", nil)
+		req.RemoteAddr = test.remote
+		recorder := httptest.NewRecorder()
+		gateway.ServeHTTP(recorder, req)
+		if recorder.Code != test.want {
+			t.Fatalf("remote %s returned %d, want %d", test.remote, recorder.Code, test.want)
+		}
+	}
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("loopback shutdown did not notify the gateway")
 	}
 }
 

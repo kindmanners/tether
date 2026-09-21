@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -61,7 +62,17 @@ func (c *Client) StopRPCServer(addr string) (*StatusResult, error) {
 // GetStatus queries addr's Agent for its current rpc-server status
 // without changing anything.
 func (c *Client) GetStatus(addr string) (*StatusResult, error) {
-	resp, err := c.httpClient.Get("https://" + addr + "/status")
+	return c.GetStatusContext(context.Background(), addr)
+}
+
+// GetStatusContext lets callers enforce an operation-wide refresh budget
+// instead of waiting for each individual Agent timeout in sequence.
+func (c *Client) GetStatusContext(ctx context.Context, addr string) (*StatusResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+"/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("contacting agent at %s: %w", addr, err)
 	}
@@ -73,7 +84,16 @@ func (c *Client) GetStatus(addr string) (*StatusResult, error) {
 // machine bootstrap. It is read-only and travels over the same pinned-mTLS
 // connection as status/start/stop commands.
 func (c *Client) GetCapabilities(addr string) (*CapabilitiesResult, error) {
-	resp, err := c.httpClient.Get("https://" + addr + "/capabilities")
+	return c.GetCapabilitiesContext(context.Background(), addr)
+}
+
+// GetCapabilitiesContext applies the same caller deadline as status probing.
+func (c *Client) GetCapabilitiesContext(ctx context.Context, addr string) (*CapabilitiesResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+"/capabilities", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("contacting agent at %s: %w", addr, err)
 	}

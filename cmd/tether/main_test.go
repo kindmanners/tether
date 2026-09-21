@@ -35,6 +35,21 @@ func TestAggregateNodeUsage(t *testing.T) {
 	}
 }
 
+func TestValidContentRange(t *testing.T) {
+	if !validContentRange("bytes 1024-12109566623/12109566624", 1024) {
+		t.Fatal("validContentRange rejected a valid resumable response")
+	}
+	for _, value := range []string{
+		"bytes 1023-12109566623/12109566624",
+		"bytes 1024-12109566623/99",
+		"not a range",
+	} {
+		if validContentRange(value, 1024) {
+			t.Fatalf("validContentRange(%q) accepted an invalid range", value)
+		}
+	}
+}
+
 func (c *fakeCommandClient) StartRPCServer(addr string, port int) (*agent.StatusResult, error) {
 	c.calls = append(c.calls, "start "+addr+" "+strconv.Itoa(port))
 	return &agent.StatusResult{Status: "Running"}, nil
