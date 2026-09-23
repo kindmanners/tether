@@ -1,11 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +24,17 @@ func TestResolveRPCEndpointsManual(t *testing.T) {
 	}
 	if len(endpoints) != 2 || endpoints[0] != "100.64.0.1:50053" {
 		t.Fatalf("unexpected endpoints: %#v", endpoints)
+	}
+}
+
+func TestDefaultLlamaServerPathMatchesPlatform(t *testing.T) {
+	got := defaultLlamaServerPath(true)
+	want := filepath.Join("llama.cpp", "build-rpc-cuda", "bin", "llama-server")
+	if runtime.GOOS == "windows" {
+		want = filepath.Join("llama.cpp", "build-rpc-cuda", "bin", "Release", "llama-server.exe")
+	}
+	if got != want {
+		t.Fatalf("defaultLlamaServerPath() = %q, want %q", got, want)
 	}
 }
 
@@ -106,6 +121,7 @@ func TestModelManagementRoutesRequireAPIKey(t *testing.T) {
 	}{
 		{name: "states", method: http.MethodGet, path: "/api/v1/model-states", validStatus: http.StatusOK},
 		{name: "refresh", method: http.MethodPost, path: "/api/v1/models/refresh", validStatus: http.StatusOK},
+		{name: "plan", method: http.MethodGet, path: "/api/v1/models/example/plan", validStatus: http.StatusServiceUnavailable},
 		{name: "load", method: http.MethodPost, path: "/api/v1/models/example/load", validStatus: http.StatusServiceUnavailable},
 		{name: "unload", method: http.MethodPost, path: "/api/v1/models/example/unload", validStatus: http.StatusServiceUnavailable},
 	}
@@ -209,5 +225,100 @@ func TestRefreshAndListModelsAreConcurrentSafe(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+func TestModelStatesRetainRemovedActiveWorker(t *testing.T) {
+	gateway := &gateway{
+		models:  map[string]string{},
+		workers: map[string]*modelWorker{"removed\x00node": {key: "removed\x00node", modelID: "removed"}},
+		states:  map[string]modelState{"removed": {Model: "removed", State: "loaded", Nodes: []string{"node"}}},
+	}
+	recorder := httptest.NewRecorder()
+	gateway.writeStates(recorder)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("model states returned %d", recorder.Code)
+	}
+	var payload struct {
+		Models []modelState `json:"models"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Models) != 1 || payload.Models[0].Model != "removed" || payload.Models[0].State != "removed" {
+		t.Fatalf("removed active worker was not exposed for unload: %#v", payload.Models)
+	}
+}
+
+func TestWaitForWorkerBoundsSlowHealthProbe(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(time.Second)
+	}))
+	defer server.Close()
+	start := time.Now()
+	err := waitForWorker(strings.TrimPrefix(server.URL, "http://"), &exec.Cmd{}, 120*time.Millisecond)
+	if err == nil {
+		t.Fatal("waitForWorker succeeded for a stalled health endpoint")
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("waitForWorker exceeded bounded startup timeout: %s", elapsed)
+	}
+}
+
+func TestModelPlanRouteIncludesCurrentReservation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.gguf"), []byte("GGUF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := newGateway(gatewayConfig{modelsDir: dir, planner: func(string) (placement.Plan, error) {
+		return placement.Plan{Mode: "whole", Nodes: []placement.Node{{Hostname: "node-a"}}, Requirement: placement.Requirement{ModelBytes: 100, KVCacheBytes: 20}}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	gateway.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/models/model/plan", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("plan route returned %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var plan modelPlan
+	if err := json.NewDecoder(recorder.Body).Decode(&plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.ReserveBytes != 120 || plan.ModelReserveBytes != 100 || plan.KVCacheBytes != 20 || plan.ObservedAt == "" {
+		t.Fatalf("unexpected placement preview: %#v", plan)
+	}
+}
+
+func TestRefreshRestoresWorkerStateWhenModelReturns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "model.gguf")
+	if err := os.WriteFile(path, []byte("GGUF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := newGateway(gatewayConfig{modelsDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &modelWorker{key: "model\x00node", modelID: "model", state: "loaded", plan: placement.Plan{Nodes: []placement.Node{{Hostname: "node"}}}}
+	gateway.workers[worker.key] = worker
+	gateway.states[worker.modelID] = modelState{Model: worker.modelID, State: "loaded"}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.refreshModels(); err != nil {
+		t.Fatal(err)
+	}
+	if got := gateway.states[worker.modelID].State; got != "removed" {
+		t.Fatalf("state after removal = %q, want removed", got)
+	}
+	if err := os.WriteFile(path, []byte("GGUF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.refreshModels(); err != nil {
+		t.Fatal(err)
+	}
+	if got := gateway.states[worker.modelID].State; got != "loaded" {
+		t.Fatalf("state after restore = %q, want loaded", got)
 	}
 }

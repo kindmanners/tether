@@ -55,8 +55,8 @@
       </section>
 
       <nav class="workspace-tabs reveal" aria-label="Orchestrator workspace" role="tablist">
-        <button id="cluster-tab" class="workspace-tab" data-tab="cluster" role="tab" aria-selected="true" aria-controls="cluster-panel">Cluster</button>
-        <button id="models-tab" class="workspace-tab" data-tab="models" role="tab" aria-selected="false" aria-controls="models-panel">Models</button>
+        <button id="cluster-tab" class="workspace-tab" data-tab="cluster" role="tab" aria-selected="true" aria-controls="cluster-panel" tabindex="0">Cluster</button>
+        <button id="models-tab" class="workspace-tab" data-tab="models" role="tab" aria-selected="false" aria-controls="models-panel" tabindex="-1">Models</button>
       </nav>
 
       <section id="cluster-panel" class="nodes-section reveal" role="tabpanel" aria-labelledby="cluster-tab">
@@ -67,7 +67,7 @@
             <div class="node-toolbar"><button id="add-node" class="secondary">Add Tailnet node</button><button id="refresh" class="secondary">Refresh nodes</button></div>
           </div>
         </div>
-        <div id="nodes" class="nodes" aria-live="polite"></div>
+        <div id="nodes" class="nodes"></div>
         <p id="allowlist" class="allowlist-path"></p>
       </section>
 
@@ -77,8 +77,8 @@
           <div class="node-toolbar"><button id="download-gpt-oss" class="secondary">Download gpt-oss-20b</button><button id="refresh-models" class="secondary">Refresh library</button></div>
         </div>
         <p id="model-directory" class="allowlist-path"></p>
-        <div id="model-download" aria-live="polite"></div>
-        <div id="models" class="models" aria-live="polite"></div>
+        <div id="model-download"></div>
+        <div id="models" class="models"></div>
       </section>
 
       <p id="notice" role="status" aria-live="polite"></p>

@@ -133,6 +133,7 @@ button.secondary:hover { border-color: var(--blue); color: var(--blue); }
 .local-gpu-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; flex: 0 0 auto; }
 .local-gpu-actions button { min-height: 36px; padding: 8px 10px; font-size: .67rem; }
 .gateway.is-control-only .local-gpu-control strong { color: var(--blue); }
+.sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 code { border-left: 1px solid var(--hairline); padding: 15px 20px; color: var(--blue); font-family: "SFMono-Regular", Consolas, monospace; font-size: .77rem; }
 
 .readiness { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--ink); margin-bottom: 70px; }

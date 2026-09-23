@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,19 +33,23 @@ import (
 // discovery, pairing and mTLS control path. It deliberately exposes a small
 // set of actions rather than a general remote-command facility.
 type OrchestratorApp struct {
-	allowlistPath  string
-	configPath     string
-	mu             sync.Mutex
-	gateway        *exec.Cmd
-	preparing      bool
-	prepareDetail  string
-	prepareLog     string
-	progressPath   string
-	monitorCancel  context.CancelFunc
-	usageHistory   map[string][]NodeUsageSample
-	modelDownload  ModelDownload
-	downloadCancel context.CancelFunc
-	gatewayDone    chan struct{}
+	allowlistPath   string
+	configPath      string
+	mu              sync.Mutex
+	gateway         *exec.Cmd
+	gatewayStarting bool
+	gatewayError    string
+	gatewayLog      string
+	preparing       bool
+	prepareDetail   string
+	prepareLog      string
+	progressPath    string
+	monitorCancel   context.CancelFunc
+	usageHistory    map[string][]NodeUsageSample
+	modelDownload   ModelDownload
+	downloadCancel  context.CancelFunc
+	gatewayDone     chan struct{}
+	modelGateway    modelGatewayClient
 }
 
 const (
@@ -159,6 +162,7 @@ func NewOrchestratorApp(allowlistPath string) *OrchestratorApp {
 		allowlistPath: allowlistPath,
 		configPath:    configPath,
 		usageHistory:  make(map[string][]NodeUsageSample),
+		modelGateway:  newLocalModelGatewayClient(),
 	}
 }
 
@@ -170,7 +174,12 @@ func (a *OrchestratorApp) startup(context.Context) {
 	go func() {
 		config, err := a.orchestratorConfig()
 		if err == nil && a.localBackendState(config).Ready {
-			_ = a.StartGateway()
+			if err := a.StartGateway(); err != nil {
+				a.mu.Lock()
+				a.gatewayError = err.Error()
+				a.mu.Unlock()
+				log.Printf("orchestrator: local gateway did not start: %v", err)
+			}
 		}
 	}()
 
@@ -442,12 +451,15 @@ func (a *OrchestratorApp) SetLocalGPUContribution(enabled bool) error {
 	return nil
 }
 
-// PrepareLocalBackend runs the reviewed, local Linux build. It creates only
+// PrepareLocalBackend runs the reviewed, platform-local build. It creates only
 // the user's llama.cpp checkout and Orchestrator preference; it never turns
 // this control host into an Agent or changes Tailscale/firewall state.
 func (a *OrchestratorApp) PrepareLocalBackend() error {
+	if runtime.GOOS == "windows" {
+		return a.prepareWindowsLocalBackend()
+	}
 	if runtime.GOOS != "linux" {
-		return fmt.Errorf("automatic Orchestrator backend setup is currently available on Linux")
+		return fmt.Errorf("automatic Orchestrator backend setup is currently available on Linux and Windows")
 	}
 	config, err := a.orchestratorConfig()
 	if err != nil {
@@ -647,10 +659,18 @@ func (a *OrchestratorApp) monitorPairedAgents(ctx context.Context) {
 // the standard local OpenAI endpoint available from the desktop app.
 func (a *OrchestratorApp) StartGateway() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.gateway != nil && a.gateway.Process != nil {
+	if a.gatewayStarting || (a.gateway != nil && a.gateway.Process != nil) {
+		a.mu.Unlock()
 		return fmt.Errorf("the local gateway is already running")
 	}
+	a.gatewayStarting = true
+	a.gatewayError = ""
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		a.gatewayStarting = false
+		a.mu.Unlock()
+	}()
 	path, err := siblingExecutable("tether-api")
 	if err != nil {
 		return err
@@ -663,29 +683,94 @@ func (a *OrchestratorApp) StartGateway() error {
 	if err != nil {
 		return err
 	}
-	arguments := []string{"--rpc", "auto", "--llama-server", llamaServer}
+	allowlistPath, err := filepath.Abs(a.allowlistPath)
+	if err != nil {
+		return fmt.Errorf("resolving node allowlist path: %w", err)
+	}
+	modelsDirectory, err := defaultModelsDirectory()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(modelsDirectory, 0700); err != nil {
+		return fmt.Errorf("creating model library: %w", err)
+	}
+	arguments := []string{"--rpc", "auto", "--llama-server", llamaServer, "--allowlist", allowlistPath, "--models-dir", modelsDirectory}
 	if !config.ContributeLocalGPU {
 		arguments = append(arguments, "--local-gpu=false")
 	}
 	command := exec.Command(path, arguments...)
+	command.Env = localBackendEnvironment(config)
 	executil.IsolateProcessTree(command)
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		return fmt.Errorf("locating gateway log directory: %w", err)
+	}
+	logDirectory := filepath.Join(cacheRoot, "tether")
+	if err := os.MkdirAll(logDirectory, 0700); err != nil {
+		return fmt.Errorf("creating gateway log directory: %w", err)
+	}
+	logPath := filepath.Join(logDirectory, "gateway.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("opening gateway log: %w", err)
+	}
+	command.Stdout, command.Stderr = logFile, logFile
 	if err := command.Start(); err != nil {
+		logFile.Close()
 		return fmt.Errorf("starting local gateway: %w", err)
 	}
+	_ = logFile.Close()
+	a.mu.Lock()
 	a.gateway = command
+	a.gatewayLog = logPath
 	done := make(chan struct{})
 	a.gatewayDone = done
+	a.mu.Unlock()
 	go func() {
-		_ = command.Wait()
+		waitErr := command.Wait()
 		a.mu.Lock()
 		if a.gateway == command {
 			a.gateway = nil
 			a.gatewayDone = nil
+			if waitErr != nil {
+				a.gatewayError = fmt.Sprintf("The local gateway exited: %v. See %s", waitErr, logPath)
+			}
 		}
 		a.mu.Unlock()
 		close(done)
 	}()
-	return nil
+
+	deadline := time.Now().Add(20 * time.Second)
+	client := &http.Client{Timeout: time.Second}
+	for time.Now().Before(deadline) {
+		select {
+		case <-done:
+			a.mu.Lock()
+			detail := a.gatewayError
+			a.mu.Unlock()
+			if detail == "" {
+				detail = "The local gateway exited before it became ready. See " + logPath
+			}
+			return fmt.Errorf("%s", detail)
+		default:
+		}
+		response, requestErr := client.Get(modelGatewayURL + "/v1/models")
+		if requestErr == nil {
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				a.mu.Lock()
+				a.gatewayError = ""
+				a.mu.Unlock()
+				return nil
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	detail := fmt.Sprintf("the local gateway is still starting after 20 seconds; see %s", logPath)
+	a.mu.Lock()
+	a.gatewayError = detail
+	a.mu.Unlock()
+	return fmt.Errorf("%s", detail)
 }
 
 // stopGateway asks tether-api to drain its model workers, then waits for the
@@ -743,8 +828,14 @@ func (a *OrchestratorApp) gatewayState() GatewayState {
 	}
 	state.Available = true
 	state.Running = a.gateway != nil && a.gateway.Process != nil
-	if state.Running {
-		state.Detail = "The local OpenAI-compatible gateway is running."
+	if a.gatewayError != "" {
+		state.Detail = a.gatewayError
+	} else if state.Running {
+		if a.gatewayStarting {
+			state.Detail = "The local OpenAI-compatible gateway is starting."
+		} else {
+			state.Detail = "The local OpenAI-compatible gateway is running."
+		}
 	} else {
 		state.Detail = "Ready to start " + filepath.Base(path) + "."
 	}
@@ -762,8 +853,10 @@ func (a *OrchestratorApp) Models() (*ModelLibrary, error) {
 	if err != nil {
 		return nil, err
 	}
-	if states, err := fetchGatewayModelStates(); err == nil {
+	if states, err := a.gatewayClient().States(); err == nil {
+		seen := make(map[string]bool, len(models))
 		for i := range models {
+			seen[models[i].ID] = true
 			if state, ok := states[models[i].ID]; ok {
 				models[i].State = state.State
 				models[i].Nodes = state.Nodes
@@ -771,6 +864,16 @@ func (a *OrchestratorApp) Models() (*ModelLibrary, error) {
 				models[i].Detail = state.Detail
 			}
 		}
+		// A worker whose source GGUF was removed remains controllable until it
+		// is explicitly unloaded. Do not hide it merely because it is no longer
+		// part of the scanned library.
+		for id, state := range states {
+			if seen[id] || state.State != "removed" {
+				continue
+			}
+			models = append(models, DesktopModel{ID: id, Filename: "Removed from library", State: state.State, Nodes: state.Nodes, UpdatedAt: state.UpdatedAt, Detail: state.Detail})
+		}
+		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	}
 	a.mu.Lock()
 	download := a.modelDownload
@@ -787,14 +890,37 @@ func (a *OrchestratorApp) LoadModel(modelID string) error {
 	if err := a.ensureGateway(); err != nil {
 		return err
 	}
-	return a.gatewayModelAction(modelID, "load")
+	return a.gatewayClient().Action(modelID, "load")
+}
+
+// ModelPlan returns the gateway's current, non-binding placement preview so
+// the desktop can make an expensive model load explicit before it begins.
+func (a *OrchestratorApp) ModelPlan(modelID string) (*ModelPlacementPlan, error) {
+	if strings.TrimSpace(modelID) == "" {
+		return nil, fmt.Errorf("choose an installed model to review")
+	}
+	if err := a.ensureGateway(); err != nil {
+		return nil, err
+	}
+	return a.gatewayClient().Plan(modelID)
 }
 
 func (a *OrchestratorApp) UnloadModel(modelID string) error {
 	if strings.TrimSpace(modelID) == "" {
 		return fmt.Errorf("choose a loaded model to unload")
 	}
-	return a.gatewayModelAction(modelID, "unload")
+	return a.gatewayClient().Action(modelID, "unload")
+}
+
+// RefreshModels rescans a running gateway before returning the desktop
+// library, so a deleted but loaded GGUF remains visible for explicit unload.
+func (a *OrchestratorApp) RefreshModels() (*ModelLibrary, error) {
+	if a.gatewayState().Running {
+		if err := a.gatewayClient().Refresh(); err != nil {
+			return nil, err
+		}
+	}
+	return a.Models()
 }
 
 // DownloadGPTOSS20B downloads the official ggml-org MXFP4 GGUF into the same
@@ -1079,7 +1205,7 @@ func (a *OrchestratorApp) ensureGateway() error {
 	}
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := fetchGatewayModelStates(); err == nil {
+		if _, err := a.gatewayClient().States(); err == nil {
 			return a.refreshGatewayModels()
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -1087,38 +1213,17 @@ func (a *OrchestratorApp) ensureGateway() error {
 	return fmt.Errorf("the local model gateway did not become ready")
 }
 
-func (a *OrchestratorApp) gatewayModelAction(modelID, action string) error {
-	endpoint := modelGatewayURL + "/api/v1/models/" + url.PathEscape(modelID) + "/" + action
-	request, err := http.NewRequest(http.MethodPost, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	response, err := (&http.Client{Timeout: 10 * time.Minute}).Do(request)
-	if err != nil {
-		return fmt.Errorf("contacting the local model gateway: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
-		return fmt.Errorf("model %s failed: %s", action, strings.TrimSpace(string(body)))
-	}
-	return nil
+func (a *OrchestratorApp) refreshGatewayModels() error {
+	return a.gatewayClient().Refresh()
 }
 
-func (a *OrchestratorApp) refreshGatewayModels() error {
-	request, err := http.NewRequest(http.MethodPost, modelGatewayURL+"/api/v1/models/refresh", nil)
-	if err != nil {
-		return err
+func (a *OrchestratorApp) gatewayClient() modelGatewayClient {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.modelGateway == nil {
+		a.modelGateway = newLocalModelGatewayClient()
 	}
-	response, err := (&http.Client{Timeout: 15 * time.Second}).Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("refreshing the model library returned %d", response.StatusCode)
-	}
-	return nil
+	return a.modelGateway
 }
 
 type gatewayModelState struct {
@@ -1129,26 +1234,16 @@ type gatewayModelState struct {
 	Detail    string   `json:"detail"`
 }
 
-func fetchGatewayModelStates() (map[string]gatewayModelState, error) {
-	response, err := (&http.Client{Timeout: 3 * time.Second}).Get(modelGatewayURL + "/api/v1/model-states")
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("model-state endpoint returned %d", response.StatusCode)
-	}
-	var payload struct {
-		Models []gatewayModelState `json:"models"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return nil, err
-	}
-	states := make(map[string]gatewayModelState, len(payload.Models))
-	for _, state := range payload.Models {
-		states[state.Model] = state
-	}
-	return states, nil
+type ModelPlacementPlan struct {
+	Model             string   `json:"model"`
+	SizeBytes         int64    `json:"sizeBytes"`
+	ReserveBytes      int64    `json:"reserveBytes"`
+	ModelReserveBytes int64    `json:"modelReserveBytes"`
+	KVCacheBytes      int64    `json:"kvCacheBytes"`
+	Mode              string   `json:"mode"`
+	Nodes             []string `json:"nodes"`
+	Detail            string   `json:"detail"`
+	ObservedAt        string   `json:"observedAt"`
 }
 
 func defaultModelsDirectory() (string, error) {
@@ -1210,18 +1305,22 @@ func (a *OrchestratorApp) localBackendState(config orchestratorconfig.Config) Ba
 }
 
 func (a *OrchestratorApp) localLlamaServer(config orchestratorconfig.Config) (string, error) {
-	candidates := make([]string, 0, 2)
+	candidates := make([]string, 0, 4)
 	if config.LlamaServerPath != "" && config.LlamaServerLocalGPU == config.ContributeLocalGPU {
 		candidates = append(candidates, config.LlamaServerPath)
 	}
 	if config.ContributeLocalGPU {
-		candidates = append(candidates, filepath.Join("llama.cpp", "build-rpc-cuda", "bin", executableName("llama-server")))
+		candidates = append(candidates, platformLlamaServerPath(filepath.Join("llama.cpp", "build-rpc-cuda")))
 	} else {
-		candidates = append(candidates, filepath.Join("llama.cpp", "build-rpc", "bin", executableName("llama-server")))
+		candidates = append(candidates, platformLlamaServerPath(filepath.Join("llama.cpp", "build-rpc")))
 	}
 	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, nil
+			absolute, absErr := filepath.Abs(candidate)
+			if absErr != nil {
+				return "", fmt.Errorf("resolving llama-server path %q: %w", candidate, absErr)
+			}
+			return absolute, nil
 		}
 	}
 	mode := "RPC control-only"
@@ -1229,6 +1328,42 @@ func (a *OrchestratorApp) localLlamaServer(config orchestratorconfig.Config) (st
 		mode = "CUDA and RPC"
 	}
 	return "", fmt.Errorf("local %s inference backend is not prepared; choose Prepare local backend", mode)
+}
+
+func platformLlamaServerPath(buildRoot string) string {
+	parts := []string{buildRoot, "bin"}
+	if runtime.GOOS == "windows" {
+		parts = append(parts, "Release")
+	}
+	parts = append(parts, executableName("llama-server"))
+	return filepath.Join(parts...)
+}
+
+func localBackendEnvironment(config orchestratorconfig.Config) []string {
+	environment := os.Environ()
+	if runtime.GOOS != "windows" || !config.ContributeLocalGPU {
+		return environment
+	}
+	programFiles := os.Getenv("ProgramFiles")
+	if programFiles == "" {
+		return environment
+	}
+	candidates, _ := filepath.Glob(filepath.Join(programFiles, "NVIDIA GPU Computing Toolkit", "CUDA", "v*", "bin"))
+	if len(candidates) == 0 {
+		return environment
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(candidates)))
+	pathValue := os.Getenv("PATH")
+	for _, candidate := range candidates {
+		pathValue = candidate + string(os.PathListSeparator) + pathValue
+	}
+	for i, item := range environment {
+		if strings.HasPrefix(strings.ToUpper(item), "PATH=") {
+			environment[i] = "PATH=" + pathValue
+			return environment
+		}
+	}
+	return append(environment, "PATH="+pathValue)
 }
 
 func executableName(name string) string {
@@ -1277,6 +1412,106 @@ func prepareLinuxOrchestratorProvisioner() (string, string, error) {
 		return "", "", fmt.Errorf("writing local Orchestrator setup script: %w", err)
 	}
 	return script, root, nil
+}
+
+func prepareWindowsOrchestratorProvisioner() (string, string, error) {
+	cacheRoot, err := os.UserCacheDir()
+	if err != nil {
+		return "", "", fmt.Errorf("locating local setup directory: %w", err)
+	}
+	root := filepath.Join(cacheRoot, "tether")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		return "", "", fmt.Errorf("creating local setup directory: %w", err)
+	}
+	script := filepath.Join(root, "bootstrap-windows-orchestrator.ps1")
+	if err := os.WriteFile(script, bootstrapassets.WindowsOrchestratorBootstrap, 0600); err != nil {
+		return "", "", fmt.Errorf("writing local Orchestrator setup script: %w", err)
+	}
+	return script, root, nil
+}
+
+func (a *OrchestratorApp) prepareWindowsLocalBackend() error {
+	config, err := a.orchestratorConfig()
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	if a.preparing {
+		a.mu.Unlock()
+		return fmt.Errorf("local backend setup is already running")
+	}
+	a.mu.Unlock()
+	script, root, err := prepareWindowsOrchestratorProvisioner()
+	if err != nil {
+		return err
+	}
+	progressPath := filepath.Join(root, "orchestrator-setup-progress.json")
+	logPath := filepath.Join(root, "orchestrator-setup.log")
+	if err := os.WriteFile(logPath, []byte("Tether Windows Orchestrator backend setup started. Full output will remain in this file.\r\n"), 0600); err != nil {
+		return fmt.Errorf("creating Orchestrator setup log: %w", err)
+	}
+	if err := writeBackendProgress(progressPath, backendProgress{Step: "requirements", Detail: "Preparing the Windows local backend setup."}); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.preparing = true
+	a.prepareDetail = "Preparing the Windows inference backend. Progress is saved in the setup log."
+	a.prepareLog = logPath
+	a.progressPath = progressPath
+	a.mu.Unlock()
+	go a.runWindowsOrchestratorProvisioner(script, progressPath, logPath, config.ContributeLocalGPU)
+	return nil
+}
+
+func (a *OrchestratorApp) runWindowsOrchestratorProvisioner(script, progressPath, logPath string, contributeGPU bool) {
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
+	if err == nil {
+		defer logFile.Close()
+		arguments := []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-InstallMissing", "-ProgressPath", progressPath}
+		if contributeGPU {
+			arguments = append(arguments, "-LocalGPU")
+		}
+		command := exec.Command("powershell.exe", arguments...)
+		executil.HideWindow(command)
+		command.Stdout, command.Stderr = logFile, logFile
+		err = command.Run()
+	}
+	a.mu.Lock()
+	a.preparing = false
+	if err != nil {
+		progress := readBackendProgress(progressPath)
+		if progress.Detail != "" {
+			a.prepareDetail = "Windows backend setup stopped: " + progress.Detail
+		} else {
+			a.prepareDetail = "Windows backend setup did not complete: " + err.Error()
+		}
+		a.mu.Unlock()
+		return
+	}
+	a.prepareDetail = "Local Windows inference backend is ready."
+	a.mu.Unlock()
+
+	config, configErr := a.orchestratorConfig()
+	if configErr != nil {
+		return
+	}
+	config.LlamaServerPath = defaultWindowsLlamaServerPath(contributeGPU)
+	config.LlamaServerLocalGPU = contributeGPU
+	if configErr = orchestratorconfig.Save(a.configPath, config); configErr == nil {
+		_ = a.StartGateway()
+	}
+}
+
+func defaultWindowsLlamaServerPath(contributeGPU bool) string {
+	dataRoot := os.Getenv("LOCALAPPDATA")
+	if dataRoot == "" {
+		dataRoot, _ = os.UserConfigDir()
+	}
+	build := "build-rpc"
+	if contributeGPU {
+		build = "build-rpc-cuda"
+	}
+	return platformLlamaServerPath(filepath.Join(dataRoot, "tether", "llama.cpp", build))
 }
 
 func (a *OrchestratorApp) runLinuxOrchestratorProvisioner(script, progressPath, logPath string, contributeGPU bool) {
@@ -1372,6 +1607,46 @@ func siblingExecutable(name string) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return "", fmt.Errorf("%s must be installed beside Tether to start the local gateway", name)
+	}
+	return path, nil
+}
+
+// resolveAllowlistPath makes packaged desktop startup independent of the
+// process working directory and keeps the mutable allowlist out of Program
+// Files. An existing source-tree or beside-executable file is copied once as
+// migration input; all subsequent edits use the private user copy.
+func resolveAllowlistPath() (string, error) {
+	configRoot, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("locating user configuration for the node allowlist: %w", err)
+	}
+	directory := filepath.Join(configRoot, "tether")
+	if err := os.MkdirAll(directory, 0700); err != nil {
+		return "", fmt.Errorf("creating node allowlist directory: %w", err)
+	}
+	path := filepath.Join(directory, "node_allowlist.yaml")
+	if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		return path, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", fmt.Errorf("checking node allowlist: %w", err)
+	}
+
+	data := []byte("nodes: []\n")
+	candidates := make([]string, 0, 2)
+	if executable, executableErr := os.Executable(); executableErr == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "node_allowlist.yaml"))
+	}
+	if workingCopy, absErr := filepath.Abs("node_allowlist.yaml"); absErr == nil {
+		candidates = append(candidates, workingCopy)
+	}
+	for _, candidate := range candidates {
+		if candidateData, readErr := os.ReadFile(candidate); readErr == nil {
+			data = candidateData
+			break
+		}
+	}
+	if err := writeFileAtomically(path, data, 0600); err != nil {
+		return "", fmt.Errorf("creating node allowlist: %w", err)
 	}
 	return path, nil
 }

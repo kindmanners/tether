@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,8 +15,72 @@ import (
 	"tether/internal/registry"
 )
 
+func TestPlatformLlamaServerPath(t *testing.T) {
+	got := platformLlamaServerPath(filepath.Join("root", "build-rpc"))
+	want := filepath.Join("root", "build-rpc", "bin", "llama-server")
+	if runtime.GOOS == "windows" {
+		want = filepath.Join("root", "build-rpc", "bin", "Release", "llama-server.exe")
+	}
+	if got != want {
+		t.Fatalf("platformLlamaServerPath() = %q, want %q", got, want)
+	}
+}
+
+func TestResolveAllowlistPathCreatesFirstRunFile(t *testing.T) {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	temporaryWorkingDirectory := t.TempDir()
+	if err := os.Chdir(temporaryWorkingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(workingDirectory) })
+	configRoot := t.TempDir()
+	t.Setenv("APPDATA", configRoot)
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	path, err := resolveAllowlistPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "nodes: []\n" {
+		t.Fatalf("first-run allowlist = %q", data)
+	}
+}
+
 type fakeCommandClient struct {
 	calls []string
+}
+
+type fakeModelGatewayClient struct {
+	actions []string
+}
+
+func (c *fakeModelGatewayClient) States() (map[string]gatewayModelState, error) {
+	return map[string]gatewayModelState{}, nil
+}
+func (c *fakeModelGatewayClient) Action(modelID, action string) error {
+	c.actions = append(c.actions, action+" "+modelID)
+	return nil
+}
+func (c *fakeModelGatewayClient) Refresh() error { return nil }
+func (c *fakeModelGatewayClient) Plan(modelID string) (*ModelPlacementPlan, error) {
+	return &ModelPlacementPlan{Model: modelID}, nil
+}
+
+func TestUnloadModelUsesInjectableGatewayClient(t *testing.T) {
+	client := &fakeModelGatewayClient{}
+	app := &OrchestratorApp{modelGateway: client}
+	if err := app.UnloadModel("model-a"); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(client.actions, ","); got != "unload model-a" {
+		t.Fatalf("gateway actions = %q, want unload model-a", got)
+	}
 }
 
 func TestAggregateNodeUsage(t *testing.T) {

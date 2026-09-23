@@ -143,6 +143,9 @@ h2 {
   top: 1.5rem;
 }
 .last-updated { color: var(--quiet); font-size: 0.72rem; margin-bottom: 0.7rem; }
+.data-freshness { background: var(--canvas); border-bottom: 1px solid var(--ink); color: var(--quiet); font-size: 0.78rem; margin: 0; padding: 0.75rem clamp(1.25rem, 4vw, 4.5rem); }
+body[data-data-mode="snapshot"] .data-freshness { background: #fff1ed; color: #8e2f19; font-weight: 700; }
+body[data-data-mode="snapshot"] .state--online, body[data-data-mode="snapshot"] .model-state--loaded { color: var(--quiet); }
 .header-actions { display: flex; gap: 0.55rem; justify-content: end; }
 
 .summary-grid {

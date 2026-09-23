@@ -74,7 +74,20 @@ function usageHistory(node) {
     <span class="history-window">Last 60s</span>
     <div class="history-row"><span class="history-label gpu">GPU ${percentage(latest.gpuPercent)}%</span><span class="history-track gpu" aria-hidden="true">${bars('gpuPercent')}</span></div>
     <div class="history-row"><span class="history-label vram">VRAM ${percentage(latest.vramPercent)}%</span><span class="history-track vram" aria-hidden="true">${bars('vramPercent')}</span></div>
+    <p class="sr-only">${escapeHTML(describeUsageTrend(history, 'gpuPercent', 'GPU use'))} ${escapeHTML(describeUsageTrend(history, 'vramPercent', 'VRAM use'))}</p>
   </section>`;
+}
+
+function describeUsageTrend(history, field, label) {
+  const values = history.map(sample => ({ value: Number(sample[field]), observedAt: sample.observedAt })).filter(sample => Number.isFinite(sample.value));
+  if (!values.length) return `${label} history is not available.`;
+  const first = percentage(values[0].value);
+  const latest = percentage(values[values.length - 1].value);
+  const direction = latest > first ? 'rose' : latest < first ? 'fell' : 'was stable';
+  const range = values.map(sample => percentage(sample.value));
+  const observedAt = new Date(values[values.length - 1].observedAt);
+  const sampleTime = Number.isNaN(observedAt.getTime()) ? 'at an unknown time' : `last sampled at ${observedAt.toLocaleTimeString()}`;
+  return `${label} ${direction} from ${first}% to ${latest}% across ${values.length} samples, ranging ${Math.min(...range)}% to ${Math.max(...range)}%, ${sampleTime}.`;
 }
 
 function formatBytes(value) {
@@ -90,41 +103,67 @@ function renderModel(model) {
   const state = String(model.state || 'unloaded');
   const stateClassName = stateClass(state);
   const isLoaded = state === 'loaded' || state === 'idle-countdown';
+  const needsUnload = isLoaded || state === 'removed';
   const placement = Array.isArray(model.nodes) && model.nodes.length ? model.nodes.join(' + ') : 'Placement selected when loaded';
   return `<article class="model-card" data-model="${escapeHTML(model.id)}">
     <div class="model-card-top"><div><h3>${escapeHTML(model.id)}</h3><p>${escapeHTML(model.filename)}</p></div><span class="model-state ${stateClassName}">${escapeHTML(state)}</span></div>
     <div class="model-meta"><span>${formatBytes(model.sizeBytes)}</span><span>${escapeHTML(placement)}</span></div>
     ${model.detail ? `<p class="model-detail">${escapeHTML(model.detail)}</p>` : ''}
-    <div class="card-actions"><button data-load-model="${escapeHTML(model.id)}" ${isLoaded || state === 'loading' ? 'hidden' : ''}>Load model</button><button class="secondary" data-unload-model="${escapeHTML(model.id)}" ${isLoaded ? '' : 'hidden'}>Unload</button></div>
+    <div class="card-actions"><button data-load-model="${escapeHTML(model.id)}" ${isLoaded || state === 'loading' || state === 'removed' ? 'hidden' : ''}>Load model</button><button class="secondary" data-unload-model="${escapeHTML(model.id)}" ${needsUnload ? '' : 'hidden'}>Unload</button></div>
   </article>`;
+}
+
+function patchCards(container, items, key, markup, emptyMarkup) {
+  const wanted = new Set(items.map(item => String(item[key])));
+  for (const card of [...container.querySelectorAll(`[data-${key}]`)]) {
+    if (!wanted.has(card.dataset[key]) && !card.contains(document.activeElement)) card.remove();
+  }
+  for (const item of items) {
+    const id = String(item[key]);
+    const oldCard = container.querySelector(`[data-${key}="${CSS.escape(id)}"]`);
+    const template = document.createElement('template');
+    template.innerHTML = markup(item).trim();
+    const nextCard = template.content.firstElementChild;
+    if (!oldCard) container.append(nextCard);
+    else if (!oldCard.contains(document.activeElement) && oldCard.outerHTML !== nextCard.outerHTML) oldCard.replaceWith(nextCard);
+  }
+  const hasCards = Boolean(container.querySelector(`[data-${key}]`));
+  const empty = container.querySelector('.empty');
+  if (!hasCards && !empty) container.insertAdjacentHTML('beforeend', emptyMarkup);
+  if (hasCards && empty) empty.remove();
 }
 
 function renderModelLibrary(library) {
   document.querySelector('#model-directory').textContent = library?.directory ? `Model library: ${library.directory}` : '';
   const download = library?.download || {};
   const downloadEl = document.querySelector('#model-download');
+  let downloadMarkup = '';
   if (download.state === 'downloading') {
     const progress = download.totalBytes > 0 ? `${formatBytes(download.bytes)} / ${formatBytes(download.totalBytes)}` : formatBytes(download.bytes);
-    downloadEl.innerHTML = `<p class="model-download"><strong>Downloading ${escapeHTML(download.filename)}</strong><span>${progress}</span><small>${escapeHTML(download.detail || '')}</small>${download.canCancel ? '<button class="secondary" data-cancel-download>Cancel download</button>' : ''}</p>`;
+    downloadMarkup = `<p class="model-download"><strong>Downloading ${escapeHTML(download.filename)}</strong><span>${progress}</span><small>${escapeHTML(download.detail || '')}</small>${download.canCancel ? '<button class="secondary" data-cancel-download>Cancel download</button>' : ''}</p>`;
   } else if (download.state === 'failed' || download.state === 'cancelled') {
-    downloadEl.innerHTML = `<p class="model-download error"><strong>Download ${escapeHTML(download.state)}</strong><small>${escapeHTML(download.detail || '')}</small><button class="secondary" data-retry-download>Retry / resume download</button></p>`;
+    downloadMarkup = `<p class="model-download error"><strong>Download ${escapeHTML(download.state)}</strong><small>${escapeHTML(download.detail || '')}</small><button class="secondary" data-retry-download>Retry / resume download</button></p>`;
   } else if (download.state === 'complete') {
-    downloadEl.innerHTML = `<p class="model-download"><strong>${escapeHTML(download.filename)} installed</strong><span>${formatBytes(download.bytes)}</span></p>`;
-  } else {
-    downloadEl.innerHTML = '';
+    downloadMarkup = `<p class="model-download"><strong>${escapeHTML(download.filename)} installed</strong><span>${formatBytes(download.bytes)}</span></p>`;
   }
+  if (!downloadEl.contains(document.activeElement) && downloadEl.innerHTML !== downloadMarkup) downloadEl.innerHTML = downloadMarkup;
   const installed = Array.isArray(library?.models) ? library.models : [];
-  modelGrid.innerHTML = installed.length ? installed.map(renderModel).join('') : '<p class="empty">No GGUF models are installed yet. Download gpt-oss-20b or add a GGUF file to this library.</p>';
+  patchCards(modelGrid, installed, 'model', renderModel, '<p class="empty">No GGUF models are installed yet. Download gpt-oss-20b or add a GGUF file to this library.</p>');
   const downloadButton = document.querySelector('#download-gpt-oss');
   downloadButton.disabled = download.state === 'downloading' || installed.some(model => model.filename === 'gpt-oss-20b-MXFP4.gguf');
   downloadButton.textContent = download.state === 'downloading' ? 'Downloading gpt-oss-20b…' : installed.some(model => model.filename === 'gpt-oss-20b-MXFP4.gguf') ? 'gpt-oss-20b installed' : 'Download gpt-oss-20b';
 }
 
 function selectWorkspace(tab) {
+	tab = tab === 'models' ? 'models' : 'cluster';
   const modelsActive = tab === 'models';
   document.querySelector('#cluster-panel').hidden = modelsActive;
   document.querySelector('#models-panel').hidden = !modelsActive;
-  document.querySelectorAll('.workspace-tab').forEach(button => button.setAttribute('aria-selected', String(button.dataset.tab === tab)));
+  document.querySelectorAll('.workspace-tab').forEach(button => {
+    const selected = button.dataset.tab === tab;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  });
   localStorage.setItem('tether-workspace-tab', tab);
 }
 
@@ -167,7 +206,8 @@ async function refresh({ quiet = false } = {}) {
     prepare.disabled = state.backend.preparing;
     document.querySelector('.gateway').classList.toggle('is-control-only', !contributing);
 
-    nodes.innerHTML = state.nodes.length ? state.nodes.map((node, index) => `
+
+    const renderedNodes = state.nodes.length ? state.nodes.map((node, index) => `
 		<article class="node-card ${node.hostname === celebratingHost ? 'just-paired' : ''}" style="--index:${index}" data-hostname="${escapeHTML(node.hostname)}" data-state="${stateClass(node.tailnet)}">
         <span class="node-index">${String(index + 1).padStart(2, '0')}</span>
         <div class="node-top">
@@ -186,6 +226,7 @@ async function refresh({ quiet = false } = {}) {
 		  ${node.paired && node.tailnet === 'Online' ? `<button data-start="${escapeHTML(node.hostname)}" ${node.agentStatus === 'Running' ? 'disabled title="RPC server is already running"' : ''}>${node.agentStatus === 'Running' ? 'RPC running' : 'Start RPC'}</button><button class="secondary" data-stop="${escapeHTML(node.hostname)}">Stop RPC</button>` : ''}
         </div>
       </article>`).join('') : '<p class="empty">No allowlisted nodes were found. Check Tailscale and the allowlist path.</p>';
+    if (!nodes.contains(document.activeElement) && nodes.innerHTML !== renderedNodes) nodes.innerHTML = renderedNodes;
 	if (celebratingHost) {
 		window.setTimeout(() => { celebratingHost = ''; }, 1100);
 	}
@@ -231,6 +272,12 @@ modelGrid.addEventListener('click', async event => {
     button.disabled = true;
     if (button.dataset.loadModel) {
       report(`Loading ${button.dataset.loadModel} across the available GPUs…`);
+      const plan = await api().ModelPlan(button.dataset.loadModel);
+      const nodes = Array.isArray(plan.nodes) && plan.nodes.length ? plan.nodes.join(' + ') : 'no GPU nodes';
+      const observedAt = plan.observedAt ? new Date(plan.observedAt).toLocaleTimeString() : 'just now';
+      const confirmed = window.confirm(`Load ${plan.model}?\n\nModel file: ${formatBytes(plan.sizeBytes)}\nRuntime reservation: ${formatBytes(plan.reserveBytes)} (model ${formatBytes(plan.modelReserveBytes)} + KV cache ${formatBytes(plan.kvCacheBytes)})\nPlacement: ${plan.mode} across ${nodes}\nCapacity sampled: ${observedAt}\nStartup allowance: up to 5 minutes\n\n${plan.detail || 'Capacity is checked again when loading starts.'}`);
+      if (!confirmed) { button.disabled = false; report('Model load cancelled.'); return; }
+      report(`Loading ${button.dataset.loadModel} across ${nodes}...`);
       await api().LoadModel(button.dataset.loadModel);
     }
     if (button.dataset.unloadModel) {
@@ -277,7 +324,10 @@ document.querySelector('#confirm-add').addEventListener('click', async event => 
 });
 
 document.querySelector('#refresh').addEventListener('click', refresh);
-document.querySelector('#refresh-models').addEventListener('click', refresh);
+document.querySelector('#refresh-models').addEventListener('click', async () => {
+  try { await api().RefreshModels(); await refresh(); }
+  catch (error) { report(error.message || String(error), true); }
+});
 async function startModelDownload() {
 	const destination = latestLibrary?.directory || 'the local model library';
 	const expected = formatBytes(12109566624);
@@ -304,7 +354,22 @@ document.querySelector('#model-download').addEventListener('click', async event 
 		if (button.dataset.retryDownload !== undefined) await startModelDownload();
 	} catch (error) { report(error.message || String(error), true); }
 });
-document.querySelectorAll('.workspace-tab').forEach(button => button.addEventListener('click', () => selectWorkspace(button.dataset.tab)));
+document.querySelectorAll('.workspace-tab').forEach(button => {
+  button.addEventListener('click', () => selectWorkspace(button.dataset.tab));
+  button.addEventListener('keydown', event => {
+    const tabs = [...document.querySelectorAll('.workspace-tab')];
+    const index = tabs.indexOf(button);
+    let next = index;
+    if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    selectWorkspace(tabs[next].dataset.tab);
+    tabs[next].focus();
+  });
+});
 document.querySelector('#theme-toggle').addEventListener('click', () => {
   setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 });

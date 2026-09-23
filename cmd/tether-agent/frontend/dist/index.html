@@ -49,7 +49,7 @@
 
       <section id="setup-log-panel" class="setup-log-panel reveal" hidden aria-labelledby="setup-log-heading">
         <div class="section-heading compact"><div><p class="eyebrow">Persistent setup log</p><h2 id="setup-log-heading">Live local setup output</h2></div><p id="setup-log-path"></p></div>
-        <pre id="setup-log" aria-live="polite"></pre>
+        <pre id="setup-log"></pre>
       </section>
 
       <section class="checklist-panel reveal" aria-labelledby="checklist-heading">
@@ -58,7 +58,7 @@
           <div class="progress-summary"><p id="progress-caption">Checking progress</p><strong id="progress-count">—</strong></div>
         </div>
         <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
-        <ol id="checklist" class="checklist" aria-live="polite"></ol>
+        <ol id="checklist" class="checklist"></ol>
       </section>
 
       <section id="code-panel" class="code-panel reveal" hidden>
@@ -72,7 +72,7 @@
           <div><p class="eyebrow">Live capacity</p><h2 id="telemetry-heading">GPU availability</h2></div>
           <p id="telemetry-updated" class="telemetry-updated">Waiting for GPU telemetry</p>
         </div>
-        <div id="gpu-telemetry" class="gpu-telemetry" aria-live="polite"></div>
+        <div id="gpu-telemetry" class="gpu-telemetry"></div>
         <div class="model-record">
           <div><p class="eyebrow">Active model</p><strong id="model-status">Checking model status…</strong></div>
           <p>The Agent contributes GPU capacity. The paired Orchestrator selects and loads the GGUF model, so its active model is not local to this node.</p>

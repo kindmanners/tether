@@ -138,7 +138,7 @@ function render(data, isFallback) {
   const online = nodes.filter((node) => node.status === "online" || node.status === "verified").length;
 
   byId("node-count").textContent = String(nodes.length);
-  byId("node-summary").textContent = `${online} online or verified`;
+  byId("node-summary").textContent = isFallback ? `${nodes.length} recorded nodes — snapshot` : `${online} online or verified`;
   byId("vram-total").textContent = gibibytes(totalVRAM);
   byId("vram-summary").textContent = reportedFree ? `${gibibytes(reportedFree)} free reported` : "Free VRAM not reported";
   byId("model-count").textContent = String(models.length);
@@ -146,6 +146,10 @@ function render(data, isFallback) {
   byId("node-source").textContent = data.source || "Live Tether registry and Agent data";
   byId("model-source").textContent = data.modelSource || data.source || "Live orchestrator model inventory";
   byId("last-updated").textContent = displayTime(data.observedAt || new Date().toISOString(), isFallback);
+  document.body.dataset.dataMode = isFallback ? "snapshot" : "live";
+  byId("data-freshness").textContent = isFallback
+    ? "Offline — showing a recorded handoff snapshot, not current cluster data. Use Tether desktop for operations."
+    : "Live read-only diagnostic view. Use Tether desktop for operations.";
   renderNodes(nodes);
   renderModels(models);
 }
@@ -156,8 +160,9 @@ async function refresh() {
   button.textContent = "Refreshing";
   try {
     render(await fetchDashboard(), false);
-  } catch (_) {
+  } catch (error) {
     render(fallbackDashboard, true);
+    byId("data-freshness").textContent = `Offline — ${error.message || 'the dashboard API could not be reached'}. Showing a recorded handoff snapshot, not current cluster data.`;
   } finally {
     button.disabled = false;
     button.textContent = "Refresh";

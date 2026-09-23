@@ -36,6 +36,7 @@ type gatewayConfig struct {
 	modelOverhead      float64
 	kvBytesPerToken    int64
 	requestShutdown    func()
+	planner            func(string) (placement.Plan, error)
 }
 
 type modelWorker struct {
@@ -68,6 +69,20 @@ type modelState struct {
 	UpdatedAt string   `json:"updatedAt"`
 	IdleUntil string   `json:"idleUntil,omitempty"`
 	Detail    string   `json:"detail,omitempty"`
+}
+
+// modelPlan is an advisory placement preview. Admission is intentionally
+// repeated by load because available VRAM can change between review and start.
+type modelPlan struct {
+	Model             string   `json:"model"`
+	SizeBytes         int64    `json:"sizeBytes"`
+	ReserveBytes      int64    `json:"reserveBytes"`
+	ModelReserveBytes int64    `json:"modelReserveBytes"`
+	KVCacheBytes      int64    `json:"kvCacheBytes"`
+	Mode              string   `json:"mode"`
+	Nodes             []string `json:"nodes"`
+	Detail            string   `json:"detail"`
+	ObservedAt        string   `json:"observedAt"`
 }
 
 func newGateway(cfg gatewayConfig) (*gateway, error) {
@@ -147,6 +162,14 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/models/") && strings.HasSuffix(r.URL.Path, "/plan") {
+		if r.Method != http.MethodGet {
+			http.Error(w, "only GET is supported", http.StatusMethodNotAllowed)
+			return
+		}
+		g.handleModelPlan(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1/models/") {
 		g.handleModelAction(w, r)
 		return
@@ -159,6 +182,48 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Tether API currently supports GET /v1/models and POST /v1/chat/completions", http.StatusNotFound)
 	}
+}
+
+func (g *gateway) handleModelPlan(w http.ResponseWriter, r *http.Request) {
+	modelID, err := url.PathUnescape(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/models/"), "/plan"))
+	if err != nil || modelID == "" || strings.Contains(modelID, "/") {
+		http.Error(w, "invalid model id", http.StatusBadRequest)
+		return
+	}
+	plan, err := g.modelPlan(modelID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(plan)
+}
+
+func (g *gateway) modelPlan(modelID string) (modelPlan, error) {
+	g.mu.Lock()
+	path, ok := g.models[modelID]
+	g.mu.Unlock()
+	if !ok {
+		return modelPlan{}, fmt.Errorf("model %q is not in Tether's GGUF library", modelID)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return modelPlan{}, fmt.Errorf("reading model %q: %w", modelID, err)
+	}
+	planner := g.cfg.planner
+	if planner == nil {
+		planner = g.planFor
+	}
+	placementPlan, err := planner(path)
+	if err != nil {
+		return modelPlan{}, err
+	}
+	return modelPlan{
+		Model: modelID, SizeBytes: info.Size(), ModelReserveBytes: placementPlan.Requirement.ModelBytes,
+		KVCacheBytes: placementPlan.Requirement.KVCacheBytes, ReserveBytes: placementPlan.Requirement.TotalBytes(),
+		Mode: string(placementPlan.Mode), Nodes: planNodeNames(placementPlan), ObservedAt: time.Now().UTC().Format(time.RFC3339),
+		Detail: "Preview only; capacity is checked again when loading starts.",
+	}, nil
 }
 
 func (g *gateway) handleModelAction(w http.ResponseWriter, r *http.Request) {
@@ -427,10 +492,23 @@ func (g *gateway) refreshModels() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.models = models
-	for modelID := range g.states {
-		if _, installed := models[modelID]; !installed && g.workerForModelLocked(modelID) == nil {
-			delete(g.states, modelID)
+	for modelID, state := range g.states {
+		if _, installed := models[modelID]; installed {
+			if state.State == "removed" {
+				if worker := g.workerForModelLocked(modelID); worker != nil {
+					g.recordLocked(worker, "")
+				}
+			}
+			continue
 		}
+		if g.workerForModelLocked(modelID) == nil {
+			delete(g.states, modelID)
+			continue
+		}
+		state.State = "removed"
+		state.Detail = "Removed from the library; unload required."
+		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		g.states[modelID] = state
 	}
 	return nil
 }
@@ -449,7 +527,11 @@ func (g *gateway) unload(worker *modelWorker) {
 	g.mu.Lock()
 	if g.workers[worker.key] == worker {
 		delete(g.workers, worker.key)
-		g.states[worker.modelID] = modelState{Model: worker.modelID, State: "unloaded", Nodes: planNodeNames(worker.plan), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		if _, installed := g.models[worker.modelID]; installed {
+			g.states[worker.modelID] = modelState{Model: worker.modelID, State: "unloaded", Nodes: planNodeNames(worker.plan), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		} else {
+			delete(g.states, worker.modelID)
+		}
 	}
 	g.mu.Unlock()
 }
@@ -483,18 +565,37 @@ func (g *gateway) launch(modelID, modelPath string, plan placement.Plan) (*model
 
 func waitForWorker(address string, cmd *exec.Cmd, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: time.Second}
 	for time.Now().Before(deadline) {
 		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
 			return fmt.Errorf("model worker exited during startup")
 		}
-		resp, err := http.Get("http://" + address + "/health")
+		probeTimeout := time.Until(deadline)
+		if probeTimeout > time.Second {
+			probeTimeout = time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/health", nil)
+		if err != nil {
+			cancel()
+			return fmt.Errorf("creating worker readiness probe: %w", err)
+		}
+		resp, err := client.Do(request)
+		cancel()
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return nil
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		if remaining > 200*time.Millisecond {
+			remaining = 200 * time.Millisecond
+		}
+		time.Sleep(remaining)
 	}
 	return fmt.Errorf("model worker did not become ready within %s", timeout)
 }
@@ -515,12 +616,22 @@ func (g *gateway) recordLocked(worker *modelWorker, detail string) {
 
 func (g *gateway) writeStates(w http.ResponseWriter) {
 	g.mu.Lock()
-	states := make([]modelState, 0, len(g.models))
+	states := make([]modelState, 0, len(g.models)+len(g.states))
+	emitted := make(map[string]bool, len(g.models)+len(g.states))
 	for model := range g.models {
 		state, ok := g.states[model]
 		if !ok {
 			state = modelState{Model: model, State: "unloaded", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 		}
+		states = append(states, state)
+		emitted[model] = true
+	}
+	for model, state := range g.states {
+		if emitted[model] || g.workerForModelLocked(model) == nil {
+			continue
+		}
+		state.State = "removed"
+		state.Detail = "Removed from the library; unload required."
 		states = append(states, state)
 	}
 	g.mu.Unlock()

@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -36,8 +37,8 @@ func main() {
 		defaultModelsDir = filepath.Join(home, "models")
 	}
 
-	defaultLlamaServer := "llama.cpp/build-rpc/bin/llama-server"
-	cudaLlamaServer := "llama.cpp/build-rpc-cuda/bin/llama-server"
+	defaultLlamaServer := defaultLlamaServerPath(false)
+	cudaLlamaServer := defaultLlamaServerPath(true)
 	listen := flag.String("listen", "127.0.0.1:11435", "OpenAI API address (host:port)")
 	modelsDir := flag.String("models-dir", defaultModelsDir, "directory containing GGUF models")
 	llamaServer := flag.String("llama-server", "", "path to llama.cpp llama-server")
@@ -70,6 +71,9 @@ func main() {
 	}
 	if *ctxSize < 1 || *parallel < 1 || *idleUnload < 0 || *workerStartTimeout <= 0 || *modelOverhead < 1 || *kvBytesPerToken < 0 {
 		log.Fatal("-ctx-size, -parallel, and -worker-start-timeout must be positive; -idle-unload and -kv-cache-bytes-per-token cannot be negative; -model-overhead must be at least 1")
+	}
+	if err := os.MkdirAll(*modelsDir, 0700); err != nil {
+		log.Fatalf("creating model directory %q: %v", *modelsDir, err)
 	}
 	if info, err := os.Stat(*modelsDir); err != nil || !info.IsDir() {
 		log.Fatalf("model directory %q is unavailable: %v", *modelsDir, err)
@@ -134,6 +138,20 @@ func main() {
 	defer cancel()
 	_ = server.Shutdown(shutdownCtx)
 	gateway.shutdown(shutdownCtx)
+}
+
+func defaultLlamaServerPath(cuda bool) string {
+	build := "build-rpc"
+	if cuda {
+		build = "build-rpc-cuda"
+	}
+	parts := []string{"llama.cpp", build, "bin"}
+	name := "llama-server"
+	if runtime.GOOS == "windows" {
+		parts = append(parts, "Release")
+		name += ".exe"
+	}
+	return filepath.Join(append(parts, name)...)
 }
 
 func llamaServerHasCUDA(path string) (bool, error) {

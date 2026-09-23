@@ -1,6 +1,8 @@
 const api = () => window.go?.main?.AgentApp;
 const notice = document.querySelector('#notice');
 let refreshTimer;
+let lastTelemetrySignature = '';
+let lastChecklistSignature = '';
 
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '—';
@@ -12,6 +14,9 @@ function escapeHTML(value) {
 }
 
 function renderTelemetry(gpus = [], modelStatus = '') {
+  const signature = JSON.stringify({ gpus, modelStatus });
+  if (signature === lastTelemetrySignature) return;
+  lastTelemetrySignature = signature;
   const container = document.querySelector('#gpu-telemetry');
   container.replaceChildren();
   if (!gpus.length) {
@@ -52,6 +57,9 @@ function report(message, error = false) {
 }
 
 function renderChecklist(checklist) {
+  const signature = JSON.stringify(checklist);
+  if (signature === lastChecklistSignature) return;
+  lastChecklistSignature = signature;
   const list = document.querySelector('#checklist');
   list.replaceChildren();
   checklist.forEach((check, index) => {

@@ -25,3 +25,10 @@ var LinuxNodeBootstrap []byte
 //
 //go:embed bootstrap-linux-orchestrator.sh
 var LinuxOrchestratorBootstrap []byte
+
+// WindowsOrchestratorBootstrap builds only the local llama-server used by the
+// desktop Orchestrator. It does not create an Agent, open firewall ports, or
+// alter Tailscale state.
+//
+//go:embed bootstrap-windows-orchestrator.ps1
+var WindowsOrchestratorBootstrap []byte

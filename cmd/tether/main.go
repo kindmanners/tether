@@ -23,8 +23,6 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
-const allowlistPath = "node_allowlist.yaml"
-
 //go:embed all:frontend/dist
 var desktopAssets embed.FS
 
@@ -38,6 +36,10 @@ var desktopAssets embed.FS
 const orchestratorIdentityName = "orchestrator"
 
 func main() {
+	allowlistPath, err := resolveAllowlistPath()
+	if err != nil {
+		log.Fatal(err)
+	}
 	app := NewOrchestratorApp(allowlistPath)
 	if err := wails.Run(&options.App{
 		Title:     "Tether",
