@@ -1,0 +1,156 @@
+name: Bug report
+description: Report a reproducible problem with Tether
+title: "[Bug]: "
+labels:
+  - bug
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        If you believe you have found a security vulnerability, do **not** report it here. Please follow the instructions in `SECURITY.md`.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Affected component
+      description: Which part of Tether is affected?
+      options:
+        - Orchestrator
+        - Agent
+        - OpenAI-compatible API
+        - Pairing / authentication
+        - Networking / mTLS
+        - Model worker management
+        - llama.cpp / ggml-rpc integration
+        - User interface
+        - Installation / build system
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: tether-version
+    attributes:
+      label: Tether version
+      description: Provide the release version, commit hash, or branch you are using.
+      placeholder: "Example: v0.2.0, main, or 4f8c3ab"
+    validations:
+      required: true
+
+  - type: input
+    id: llama-version
+    attributes:
+      label: llama.cpp version
+      description: If relevant, provide your llama.cpp version or commit.
+      placeholder: "Example: b10931 or commit hash"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: operating-system
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: os-details
+    attributes:
+      label: Operating system details
+      description: Include distribution/version where relevant.
+      placeholder: "Example: Arch Linux, Windows 11, Ubuntu 24.04"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: topology
+    attributes:
+      label: Deployment type
+      description: Where does the issue occur?
+      options:
+        - Orchestrator only
+        - Local Agent
+        - Remote Agent
+        - Multiple Agents
+        - Not sure
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: Clearly describe what went wrong.
+      placeholder: Tell us what happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reliable set of steps that reproduces the issue.
+      placeholder: |
+        1. Start Tether with ...
+        2. Connect an Agent ...
+        3. Run ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Paste relevant logs here.
+
+        Remove passwords, API keys, access tokens, certificates, private keys, IP addresses you do not want to disclose, and other sensitive information.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add anything else that may help diagnose the issue.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find an existing report for this problem.
+          required: true
+        - label: I have removed secrets and other sensitive information from this report.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

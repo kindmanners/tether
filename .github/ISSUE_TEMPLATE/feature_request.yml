@@ -1,0 +1,77 @@
+name: Feature request
+description: Suggest an improvement or new feature for Tether
+title: "[Feature]: "
+labels:
+  - enhancement
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement to Tether.
+
+        Please explain the problem or use case first rather than only describing a proposed implementation.
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Area
+      description: Which part of Tether would this feature affect?
+      options:
+        - Orchestrator
+        - Agent
+        - OpenAI-compatible API
+        - Pairing / authentication
+        - Networking / mTLS
+        - Model placement / scheduling
+        - Model worker management
+        - llama.cpp / ggml-rpc integration
+        - User interface
+        - Installation / deployment
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What problem would this feature solve?
+      placeholder: Describe the situation that makes this feature useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe how you think the feature should work.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you considered any other approaches or workarounds?
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add mockups, examples, related projects, links, or other useful information.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and did not find an existing request for this feature.
+          required: true
+        - label: This request is related to Tether rather than an upstream dependency such as llama.cpp.
+          required: true
