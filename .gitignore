@@ -1,6 +1,6 @@
 docs/*
-!docs/windows-gpu-node-bootstrap.md
-!docs/openai-api.md
-!docs/placement.md
+docs/windows-gpu-node-bootstrap.md
+docs/openai-api.md
+docs/placement.md
 bin
 llama.cpp
