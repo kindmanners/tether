@@ -117,6 +117,22 @@ and `chore`. Explain motivation and compatibility impact in the body when the
 subject alone is not enough. Mark breaking changes with `!` or a
 `BREAKING CHANGE:` footer.
 
+## AI Coding Assistants
+
+If you use an LLM or AI-powered coding assistant when contributing to Tether, you remain fully responsible for the resulting contribution.
+
+Before submitting AI-assisted code, you must:
+
+- Review and understand all generated or modified code.
+- Verify that the contribution complies with Tether's license and contribution requirements.
+- Ensure that generated code does not reproduce incompatible or improperly attributed third-party code.
+- Run the relevant tests and verify that the change behaves as intended.
+- Remove secrets, credentials, private keys, tokens, personal data, and other sensitive information from prompts, logs, patches, and submitted code.
+- Verify security-sensitive changes manually, especially changes involving authentication, pairing, mTLS, networking, agent control, or API access.
+- Clearly disclose substantial AI assistance in the pull request when it materially contributed to the implementation.
+
+AI-generated output must not be treated as authoritative. Contributors are expected to validate technical correctness, licensing, security, and compatibility before submission. Refer to [LLM's.md](LLM's.md)
+
 ## License
 
 By contributing, you confirm that you have the right to submit the work and

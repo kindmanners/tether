@@ -388,4 +388,14 @@ Tech Stack
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 
+## AI Coding Assistants
+
+If you are using an LLM or AI-powered coding assistant, you MUST read and follow
+the AI contribution requirements before contributing to Tether:
+
+* CONTRIBUTING.md#ai-coding-assistants
+
+Contributors remain responsible for the correctness, security, licensing, and
+provenance of all submitted code, including AI-assisted contributions.
+
 ### (c) kindmanners
