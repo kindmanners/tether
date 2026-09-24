@@ -173,6 +173,9 @@ func NewOrchestratorApp(allowlistPath string) *OrchestratorApp {
 		// while Wails is starting.
 		configPath = ""
 	}
+	if modelsDirectory, modelsErr := defaultModelsDirectory(); modelsErr == nil {
+		_ = os.MkdirAll(modelsDirectory, 0700)
+	}
 	return &OrchestratorApp{
 		allowlistPath: allowlistPath,
 		configPath:    configPath,
@@ -686,6 +689,9 @@ func (a *OrchestratorApp) StartGateway() error {
 		a.gatewayStarting = false
 		a.mu.Unlock()
 	}()
+	if gatewayEndpointReady() {
+		return fmt.Errorf("the local gateway endpoint %s is already in use by a process Tether does not own", modelGatewayURL)
+	}
 	path, err := siblingExecutable("tether-api")
 	if err != nil {
 		return err
@@ -773,19 +779,42 @@ func (a *OrchestratorApp) StartGateway() error {
 		if requestErr == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
-				a.mu.Lock()
-				a.gatewayError = ""
-				a.mu.Unlock()
-				return nil
+				time.Sleep(100 * time.Millisecond)
+				select {
+				case <-done:
+					continue
+				default:
+				}
+				if gatewayEndpointReady() {
+					a.mu.Lock()
+					a.gatewayError = ""
+					a.mu.Unlock()
+					return nil
+				}
 			}
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
 	detail := fmt.Sprintf("the local gateway is still starting after 20 seconds; see %s", logPath)
+	_ = executil.KillProcessTree(command)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		detail += "; its process tree did not exit after forced cleanup"
+	}
 	a.mu.Lock()
 	a.gatewayError = detail
 	a.mu.Unlock()
 	return fmt.Errorf("%s", detail)
+}
+
+func gatewayEndpointReady() bool {
+	response, err := (&http.Client{Timeout: 500 * time.Millisecond}).Get(modelGatewayURL + "/v1/models")
+	if err != nil {
+		return false
+	}
+	response.Body.Close()
+	return response.StatusCode == http.StatusOK
 }
 
 // stopGateway asks tether-api to drain its model workers, then waits for the
@@ -1367,11 +1396,10 @@ func localBackendEnvironment(config orchestratorconfig.Config) []string {
 	if len(candidates) == 0 {
 		return environment
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(candidates)))
-	pathValue := os.Getenv("PATH")
-	for _, candidate := range candidates {
-		pathValue = candidate + string(os.PathListSeparator) + pathValue
-	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return compareWindowsCUDAVersion(candidates[i], candidates[j]) > 0
+	})
+	pathValue := candidates[0] + string(os.PathListSeparator) + os.Getenv("PATH")
 	for i, item := range environment {
 		if strings.HasPrefix(strings.ToUpper(item), "PATH=") {
 			environment[i] = "PATH=" + pathValue
@@ -1379,6 +1407,19 @@ func localBackendEnvironment(config orchestratorconfig.Config) []string {
 		}
 	}
 	return append(environment, "PATH="+pathValue)
+}
+
+func compareWindowsCUDAVersion(left, right string) int {
+	parse := func(path string) [2]int {
+		var version [2]int
+		_, _ = fmt.Sscanf(strings.TrimPrefix(filepath.Base(filepath.Dir(path)), "v"), "%d.%d", &version[0], &version[1])
+		return version
+	}
+	leftVersion, rightVersion := parse(left), parse(right)
+	if leftVersion[0] != rightVersion[0] {
+		return leftVersion[0] - rightVersion[0]
+	}
+	return leftVersion[1] - rightVersion[1]
 }
 
 func executableName(name string) string {
@@ -1512,8 +1553,16 @@ func (a *OrchestratorApp) runWindowsOrchestratorProvisioner(script, progressPath
 	}
 	config.LlamaServerPath = defaultWindowsLlamaServerPath(contributeGPU)
 	config.LlamaServerLocalGPU = contributeGPU
-	if configErr = orchestratorconfig.Save(a.configPath, config); configErr == nil {
-		_ = a.StartGateway()
+	if configErr = orchestratorconfig.Save(a.configPath, config); configErr != nil {
+		a.mu.Lock()
+		a.prepareDetail = "The backend was built, but saving its configuration failed: " + configErr.Error()
+		a.mu.Unlock()
+		return
+	}
+	if startErr := a.StartGateway(); startErr != nil {
+		a.mu.Lock()
+		a.gatewayError = startErr.Error()
+		a.mu.Unlock()
 	}
 }
 

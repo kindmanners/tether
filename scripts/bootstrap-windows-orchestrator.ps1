@@ -31,6 +31,7 @@ param(
     [switch]$LocalGPU,
     [string]$LlamaCppPath,
     [string]$ProgressPath,
+    [string]$MinimumCudaVersion = '12.0',
     [string]$LlamaCppRevision = '3057bb66c86c46d5781e50e85462a760ba7d1feb'
 )
 
@@ -86,7 +87,10 @@ function Get-CudaToolkit {
     if (Test-Path -LiteralPath $base) {
         $candidates += Get-ChildItem -LiteralPath $base -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'bin\nvcc.exe') } | ForEach-Object FullName
     }
-    return $candidates | Sort-Object -Descending | Select-Object -First 1
+    return $candidates | Sort-Object {
+        $leaf = (Split-Path $_ -Leaf).TrimStart('v')
+        try { [version]$leaf } catch { [version]'0.0' }
+    } -Descending | Select-Object -First 1
 }
 
 function Refresh-ToolPaths {
@@ -138,6 +142,10 @@ if ($LocalGPU) {
         $cudaPath = Get-CudaToolkit
     }
     if (-not $cudaPath) { throw 'The NVIDIA CUDA Toolkit is required when this Orchestrator contributes its GPU.' }
+    $cudaVersion = try { [version](Split-Path $cudaPath -Leaf).TrimStart('v') } catch { $null }
+    if (-not $cudaVersion -or $cudaVersion -lt [version]$MinimumCudaVersion) {
+        throw "CUDA $MinimumCudaVersion or newer is required; found $(Split-Path $cudaPath -Leaf)."
+    }
     $env:CUDA_PATH = $cudaPath
     $env:CudaToolkitDir = "$cudaPath\"
     Enable-CudaRuntimePath $cudaPath

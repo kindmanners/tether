@@ -41,6 +41,17 @@ func TestPlatformLlamaServerPath(t *testing.T) {
 	}
 }
 
+func TestWindowsCUDAVersionOrderingIsNumeric(t *testing.T) {
+	older := filepath.Join("CUDA", "v9.2", "bin")
+	newer := filepath.Join("CUDA", "v13.4", "bin")
+	if compareWindowsCUDAVersion(newer, older) <= 0 {
+		t.Fatalf("expected %q to be newer than %q", newer, older)
+	}
+	if compareWindowsCUDAVersion(filepath.Join("CUDA", "v12.10", "bin"), filepath.Join("CUDA", "v12.9", "bin")) <= 0 {
+		t.Fatal("CUDA minor versions are not compared numerically")
+	}
+}
+
 func TestResolveAllowlistPathCreatesFirstRunFile(t *testing.T) {
 	workingDirectory, err := os.Getwd()
 	if err != nil {
