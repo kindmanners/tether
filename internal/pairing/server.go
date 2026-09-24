@@ -36,7 +36,7 @@ import (
 )
 
 // maxPairRequestBytes bounds how much of a /pair request body we'll ever
-// read. A pairing_code plus a PEM-encoded cert comfortably fits in a few
+// read. A pairing proof plus a PEM-encoded cert comfortably fits in a few
 // KB; 64KB is generous headroom, not a tight budget. Without this, a
 // client could stream an unbounded amount of data at the endpoint and
 // exhaust memory before json.Decode ever gets far enough to reject it.
@@ -60,9 +60,16 @@ const (
 // has no native binary type — PEM is already text, so it round-trips
 // through JSON cleanly without a base64 wrapper layer of our own.
 type pairRequest struct {
-	PairingCode          string `json:"pairing_code"`
+	PairingProof         string `json:"pairing_proof"`
 	OrchestratorCertPEM  string `json:"orchestrator_cert"`
 	OrchestratorHostname string `json:"orchestrator_hostname"`
+}
+
+// pairInfoResponse is unauthenticated bootstrap information. AgentProof is
+// verified with the out-of-band code before the Client accepts AgentCertPEM.
+type pairInfoResponse struct {
+	AgentCertPEM string `json:"agent_cert"`
+	AgentProof   string `json:"agent_proof"`
 }
 
 // pairResponse is what the Agent sends back on a successful pairing.
@@ -85,17 +92,12 @@ type pairErrorResponse struct {
 // Code) should be created each time a human deliberately initiates
 // pairing for a new node.
 //
-// Serves over TLS using the Agent's own identity certificate (from
-// internal/certs). This is NOT mutual/verified TLS — the Orchestrator has
-// no pinned cert for this Agent yet at this point (that's the entire
-// problem pairing solves), so the Orchestrator-side client for this
-// specific bootstrap call must skip certificate verification. That's
-// safe here specifically because the pairing Code, not the TLS
-// certificate, is the actual authentication mechanism during pairing —
-// TLS at this stage buys confidentiality-in-transit against passive
-// network observation, not identity verification. Every connection AFTER
-// a successful pairing uses the cert trust.Pin stored, verified for
-// real — InsecureSkipVerify must never be used there.
+// Serves over TLS using the Agent's own identity certificate. The first
+// bootstrap response is fetched before the Orchestrator has a pin, but its
+// certificate is authenticated by an HMAC derived from the out-of-band code.
+// The Client then pins that exact certificate for the pairing request. The
+// code itself never crosses the network, and every connection after pairing
+// uses the certificate trust.Pin stored for the peer.
 type Server struct {
 	code          *Code
 	agentIdentity *certs.Identity
@@ -116,8 +118,8 @@ type pairAttempts struct {
 }
 
 // NewServer creates a pairing Server for a single pairing attempt, using
-// agentIdentity as this Agent's own certificate to present once a valid
-// code is received. window controls both how long the generated Code
+// agentIdentity as this Agent's own certificate. window controls both how long
+// the generated Code
 // stays valid AND how long Start listens before giving up — the two are
 // intentionally the same value, driven from one parameter, so they can't
 // drift apart (a Code that's still "valid" after the server has already
@@ -161,15 +163,9 @@ func (s *Server) OrchestratorTailnetHostname() string {
 // pairing did not complete (window expired with no valid attempt, or a
 // server error).
 //
-// A WRONG pairing code does NOT end the session — Start keeps listening,
-// allowing the legitimate user to retry, right up until either a correct
-// code is presented or the window elapses. See Code.Consume's doc
-// comment for why: an earlier version terminated the session on the
-// first wrong guess, which meant anyone who could reach this port (not
-// just the legitimate user) could kill a pairing attempt with a single
-// garbage request — a trivial denial-of-service against the exact thing
-// this mechanism exists to protect. Only a SUCCESSFUL pairing, a server
-// error, or the window's own expiry end the session now.
+// An invalid proof does not end the session, allowing a legitimate user to
+// correct a mistyped code. Only a successful pairing, a server error, or the
+// window's expiry ends the session.
 func (s *Server) Start(addr string) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/pair", s.handlePair)
@@ -225,9 +221,9 @@ func (s *Server) Start(addr string) error {
 	return s.result
 }
 
-// handlePair is the actual /pair endpoint logic: validate the code,
-// parse and pin the Orchestrator's cert, respond with this Agent's own
-// cert.
+// handlePair returns code-authenticated Agent bootstrap information on GET and
+// accepts a certificate-bound pairing proof on POST. The out-of-band code is
+// never sent over the network.
 //
 // A WRONG code rejects the request but does NOT call finish — the
 // session stays alive for another attempt (see Start's doc comment). Once
@@ -237,6 +233,10 @@ func (s *Server) Start(addr string) error {
 // attempt against this Server could succeed regardless: the one valid
 // code has already been used.
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.handlePairInfo(w)
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "only POST is supported")
 		return
@@ -260,51 +260,36 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.code.Consume(req.PairingCode) {
-		// Deliberately vague to the caller — "invalid or expired code"
-		// rather than distinguishing "wrong code" from "expired" from
-		// "already used by someone else". A more specific error would
-		// help a legitimate user debug a typo, but would also help an
-		// attacker distinguish attack outcomes; the fix is identical in
-		// every case (try again, or ask for a fresh code once expired),
-		// so the vaguer message costs little. The candidate code itself
-		// is never logged — design doc §6.2 says pairing codes are never
-		// persisted or logged, and that applies to failed guesses too,
-		// not just the real one.
-		writeError(w, http.StatusUnauthorized, "invalid or expired pairing code")
-		log.Printf("pairing: rejected an attempt with an invalid or expired code")
-		return // NOT calling finish — session stays open for a retry
-	}
-
 	block, _ := pem.Decode([]byte(req.OrchestratorCertPEM))
 	if block == nil {
 		writeError(w, http.StatusBadRequest, "no PEM block found in orchestrator_cert")
-		s.finish(fmt.Errorf("pairing succeeded on code but orchestrator cert was malformed (no PEM block)"))
 		return
 	}
 
 	orchestratorCert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "orchestrator_cert did not parse as a valid certificate")
-		s.finish(fmt.Errorf("pairing succeeded on code but orchestrator cert failed to parse: %w", err))
 		return
 	}
 
 	orchestratorHostname := orchestratorCert.Subject.CommonName
 	if orchestratorHostname == "" {
 		writeError(w, http.StatusBadRequest, "orchestrator_cert has no CommonName to identify it by")
-		s.finish(fmt.Errorf("pairing succeeded on code but orchestrator cert had empty CommonName"))
 		return
 	}
 
 	if req.OrchestratorHostname == "" || strings.ContainsAny(req.OrchestratorHostname, "/\\ \t\r\n") {
 		writeError(w, http.StatusBadRequest, "orchestrator Tailnet hostname is invalid")
-		s.finish(fmt.Errorf("pairing succeeded on code but Orchestrator Tailnet hostname was invalid"))
+		return
+	}
+	if !s.code.ConsumeProof(req.PairingProof, s.agentIdentity.CertDER, block.Bytes, []byte(req.OrchestratorHostname)) {
+		writeError(w, http.StatusUnauthorized, "invalid or expired pairing proof")
+		log.Printf("pairing: rejected an attempt with an invalid or expired pairing proof")
 		return
 	}
 	if err := trust.Pin(orchestratorHostname, block.Bytes); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to pin orchestrator certificate")
-		s.finish(fmt.Errorf("pairing succeeded on code but pinning orchestrator cert failed: %w", err))
+		s.finish(fmt.Errorf("pairing proof succeeded but pinning orchestrator cert failed: %w", err))
 		return
 	}
 	s.mu.Lock()
@@ -332,6 +317,17 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("pairing: successfully paired with orchestrator %q", orchestratorHostname)
 	s.finish(nil)
+}
+
+func (s *Server) handlePairInfo(w http.ResponseWriter) {
+	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: s.agentIdentity.CertDER})
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(pairInfoResponse{
+		AgentCertPEM: string(certificatePEM),
+		AgentProof:   s.code.Proof(s.agentIdentity.CertDER),
+	}); err != nil {
+		log.Printf("pairing: failed to write pairing information: %v", err)
+	}
 }
 
 // limitConnections caps the pairing window's exposure before a request is

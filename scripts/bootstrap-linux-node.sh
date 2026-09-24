@@ -255,11 +255,11 @@ fi
 check_cancel
 progress firewall 'Reviewing narrow firewall guidance; Tether will not modify firewall rules automatically.'
 if need ufw; then
-  printf 'Firewall guidance (not applied): sudo ufw allow from 100.64.0.0/10 to any port %s proto tcp; sudo ufw allow from 100.64.0.0/10 to any port %s proto tcp\n' "$AGENT_PORT" "$RPC_PORT"
+  printf 'Firewall guidance (not applied): after configuring a Tailscale grant for the specific Orchestrator, optionally allow its exact Tailscale IP with: sudo ufw allow from <orchestrator-tailscale-ip> to any port %s proto tcp; sudo ufw allow from <orchestrator-tailscale-ip> to any port %s proto tcp\n' "$AGENT_PORT" "$RPC_PORT"
 elif need firewall-cmd; then
-  printf 'Firewall guidance (not applied): use your active firewalld zone to allow TCP %s and %s only from the Tailnet range 100.64.0.0/10.\n' "$AGENT_PORT" "$RPC_PORT"
+  printf 'Firewall guidance (not applied): after configuring a Tailscale grant for the specific Orchestrator, use your active firewalld zone to allow TCP %s and %s only from that Orchestrator address.\n' "$AGENT_PORT" "$RPC_PORT"
 else
-  printf 'Firewall guidance: if a host firewall is enabled, allow TCP %s and %s only from Tailnet range 100.64.0.0/10. No firewall changes were made.\n' "$AGENT_PORT" "$RPC_PORT"
+  printf 'Firewall guidance: configure a Tailscale grant for the specific Orchestrator. If a host firewall is enabled, allow TCP %s and %s only from that Orchestrator address. No firewall changes were made.\n' "$AGENT_PORT" "$RPC_PORT"
 fi
 
 progress configuration 'Writing only the local Agent configuration and observed GPU capability report.'

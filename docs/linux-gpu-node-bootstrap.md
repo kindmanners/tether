@@ -41,8 +41,9 @@ Set `rpc_listen_host` to the node's Tailscale IPv4 address.
    `node_allowlist.yaml`.
 2. Complete local Agent preflight or setup and start `tether-agent`.
 3. Pair from the Orchestrator with the displayed one-time pairing code.
-4. Permit TCP 7420 and the configured RPC port only for the relevant Tailnet
-   traffic. Apply firewall changes according to the host's normal firewall
-   policy.
+4. In the Tailnet policy, allow only the specific Orchestrator to reach TCP
+   7420 and the configured RPC port. Match any host-firewall rule to that
+   policy; a whole-Tailnet allow rule is only a broad backstop. See the
+   [network-policy example](configuration.md#network-policy).
 
 Do not expose either service to the public internet.

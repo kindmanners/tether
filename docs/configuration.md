@@ -31,6 +31,32 @@ online in the Tailnet and present in this allowlist.
 the local llama.cpp RPC server will use. Do not expose either port publicly;
 allow only the required Tailnet traffic.
 
+## Registry data model
+
+The allowlist is merged with live Tailscale data to create a registry node.
+The following simplified Go view is useful when integrating with the registry;
+the allowlist itself contains only `hostname`, `role`, and the two ports.
+
+```go
+type Node struct {
+	Hostname     string
+	TailscaleIP  string
+	Role         string
+	AgentPort    int
+	RPCPort      int
+	Status       NodeStatus
+	LastSeen     time.Time
+	Capabilities NodeCapabilities
+}
+
+type NodeCapabilities struct {
+	CPUModel  string
+	GPUModel  string
+	VRAMTotal int64 // bytes
+	RAMTotal  int64 // bytes
+}
+```
+
 ## Agent configuration
 
 The Agent reads its local file from the platform user configuration directory:
@@ -51,3 +77,33 @@ Agent will accept the configuration.
 Changing the Agent configuration is a local operator action. Pairing only
 establishes identity and trust; it does not give the Orchestrator authority to
 choose an executable or bind address.
+
+## Network policy
+
+`ggml-rpc-server` does not provide Tether mTLS or application-layer
+authentication. Bind it to the node's Tailscale address and allow only the
+specific Orchestrator to reach both TCP 7420 and the node's configured RPC
+port. Do not rely on an allow rule for the entire Tailnet.
+
+For example, assign role tags to the two machine types and add a Tailscale
+grant for the exact ports (replace `50053` with the Agent's `rpc_port`):
+
+```jsonc
+{
+  "tagOwners": {
+    "tag:tether-orchestrator": ["autogroup:admin"],
+    "tag:tether-agent": ["autogroup:admin"]
+  },
+  "grants": [
+    {
+      "src": ["tag:tether-orchestrator"],
+      "dst": ["tag:tether-agent"],
+      "ip": ["tcp:7420", "tcp:50053"]
+    }
+  ]
+}
+```
+
+Use equivalent selectors for named devices or groups if tags do not fit your
+Tailnet. Keep any Windows or Linux host-firewall rule aligned with this policy;
+the bootstrap's Tailnet-range firewall rule is not a substitute for it.

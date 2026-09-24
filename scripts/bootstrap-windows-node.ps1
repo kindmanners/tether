@@ -22,7 +22,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 .DESCRIPTION
     This configures only machine-local state: CUDA/build prerequisites, the
-    pinned llama.cpp RPC build, Tailnet-scoped firewall rules, and the Agent's
+    pinned llama.cpp RPC build, Tailnet-range firewall rules, and the Agent's
     local config. It never pairs an Agent automatically; pairing needs the
     one-time local code required by Tether's pinned-mTLS design.
 #>
@@ -604,7 +604,7 @@ if (-not $Provision) {
     exit 0
 }
 if ($WhatIfPreference) {
-    Write-Host "`nWhatIf: would build the Agent and CUDA RPC server, add Tailnet-only firewall rules, update the user CUDA runtime PATH, and write the local Agent config/report." -ForegroundColor Cyan
+    Write-Host "`nWhatIf: would build the Agent and CUDA RPC server, add Tailnet-range firewall rules, update the user CUDA runtime PATH, and write the local Agent config/report. Configure a separate least-privilege Tailnet policy for the Orchestrator." -ForegroundColor Cyan
     exit 0
 }
 
@@ -633,9 +633,10 @@ Write-Step 'Building pinned llama.cpp CUDA RPC server' 'rpc-server'
     $rpcServer = Invoke-LlamaCppBuild -SourcePath $LlamaCppPath -CudaPath $cuda.Path
 } elseif (-not (Test-Path $rpcServer)) { throw "-SkipRPCBuild was specified but no RPC server exists at $rpcServer." }
 
-Write-Step 'Creating Tailnet-only firewall rules' 'configuration'
+Write-Step 'Creating Tailnet-range firewall rules' 'configuration'
 Ensure-FirewallRule -Name "Tether Agent TCP $AgentPort" -Port $AgentPort
 Ensure-FirewallRule -Name "Tether llama.cpp RPC TCP $RPCPort" -Port $RPCPort
+Write-Warning "These Windows Firewall rules allow the Tailnet range ($TailnetCIDR). Before operating this node, configure Tailscale grants so only the Orchestrator can reach TCP $AgentPort and TCP $RPCPort."
 Write-Step 'Writing local Agent configuration' 'configuration'
 $configPath = Write-AgentConfig -RPCServerPath $rpcServer -ListenHost $tailscaleIP
 $reportPath = Write-Report -GpuInfo $gpuInfo -Cuda $cuda -TailscaleIP $tailscaleIP -TailscaleHostname $tailscaleHostname -AgentConfigPath $configPath

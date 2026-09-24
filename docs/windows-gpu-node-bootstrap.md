@@ -44,7 +44,10 @@ Use the node's Tailscale IPv4 address for `rpc_listen_host`.
 2. Start `tether-agent.exe` and complete its local preflight/setup.
 3. In the Orchestrator, select the online allowlisted node and enter the
    Agent's displayed, single-use pairing code.
-4. Allow Tailnet traffic to TCP 7420 and the configured RPC port in both
-   Tailnet ACLs and Windows Firewall.
+4. In the Tailnet policy, allow only the specific Orchestrator to reach TCP
+   7420 and the configured RPC port. The bootstrap's Windows Firewall rules
+   permit the Tailnet range and are only a broad host-level backstop; they do
+   not authorize all Tailnet peers to use the Agent or RPC server. See the
+   [network-policy example](configuration.md#network-policy).
 
 Never expose the Agent or RPC port to a public network.

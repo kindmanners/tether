@@ -17,6 +17,7 @@ package pairing
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -31,88 +32,99 @@ import (
 	"tether/internal/trust"
 )
 
-// clientTimeout bounds a single pairing HTTP request. Deliberately short —
-// this is a local-network (Tailscale) call to a machine that's supposed to
-// be actively listening for exactly this request right now; there's no
-// legitimate reason for it to hang.
 const clientTimeout = 10 * time.Second
-
-// pairingHTTPClient is used ONLY for the bootstrap /pair exchange. It sets
-// InsecureSkipVerify because, at this point in the flow, the Orchestrator
-// has no pinned certificate for the Agent it's contacting — that's the
-// entire problem pairing solves, so there's nothing yet to verify the
-// Agent's TLS certificate against. This is safe specifically because the
-// pairing Code (supplied out-of-band by a human) is the real
-// authentication mechanism here, not the TLS certificate — TLS at this
-// stage buys confidentiality-in-transit against passive observation, not
-// identity verification.
-//
-// This client (or InsecureSkipVerify generally) must NEVER be reused for
-// any connection after a successful pairing. Every connection after
-// pairing must verify against the specific certificate trust.Pin stored
-// during this exchange — using a client that skips verification there
-// would silently throw away the entire point of pairing.
-var pairingHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
-	Timeout: clientTimeout,
-}
 
 // PairResult is what a successful Client.Pair call returns.
 type PairResult struct {
-	// AgentHostname is the hostname the Agent's certificate identifies
-	// itself as (its CommonName), which is also the key it was pinned
-	// under in internal/trust.
 	AgentHostname string
 }
 
-// Client performs the Orchestrator side of the pairing handshake (design
-// doc §6.2) against one specific Agent. Construct with the Orchestrator's
-// own identity (presented to the Agent as part of the exchange), then
-// call Pair once per pairing attempt.
+// Client performs the Orchestrator side of the first-contact handshake.
 type Client struct {
 	orchestratorIdentity *certs.Identity
 }
 
-// NewClient creates a pairing Client that will present orchestratorIdentity
-// as this Orchestrator's own certificate during any pairing it performs.
+// NewClient creates a pairing Client that presents orchestratorIdentity.
 func NewClient(orchestratorIdentity *certs.Identity) *Client {
 	return &Client{orchestratorIdentity: orchestratorIdentity}
 }
 
-// Pair attempts to pair with an Agent at addr (e.g. "100.114.155.22:7420")
-// using code — the pairing code a human read off the Agent (or the
-// Orchestrator, depending on which side displays it) and typed in here.
-//
-// On success, the Agent's certificate is parsed AND PINNED via
-// internal/trust before Pair returns — the caller does not need to (and
-// should not need to) do this separately. This mirrors what
-// Server.handlePair already does for the Orchestrator's cert on the
-// Agent side: keeping "pin on successful pairing" as pairing's own
-// responsibility, rather than something every caller has to remember to
-// do afterward, since there's no legitimate reason to pair without
-// pinning the result.
-//
-// A wrong code, a network error, or a malformed response all return a
-// non-nil error and pin nothing. Per Server's design, a wrong code does
-// NOT necessarily mean the pairing session is over — the Agent's Server
-// keeps listening for further attempts within its window (see
-// Code.Consume's doc comment for why), so a caller may reasonably retry
-// Pair with a corrected code against the same addr, as long as the
-// Agent's window hasn't closed yet.
+func unverifiedHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // #nosec G402 -- immediately authenticated by the out-of-band proof below.
+	return &http.Client{Transport: transport, Timeout: clientTimeout}
+}
+
+func pinnedHTTPClient(expectedCertDER []byte) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{
+		InsecureSkipVerify: true, // #nosec G402 -- VerifyConnection performs exact certificate pinning.
+		VerifyConnection: func(connection tls.ConnectionState) error {
+			if len(connection.PeerCertificates) == 0 || subtle.ConstantTimeCompare(connection.PeerCertificates[0].Raw, expectedCertDER) != 1 {
+				return fmt.Errorf("pairing endpoint did not present the code-authenticated Agent certificate")
+			}
+			return nil
+		},
+	}
+	return &http.Client{Transport: transport, Timeout: clientTimeout}
+}
+
+func decodeCertificate(certPEM string, description string) (*x509.Certificate, error) {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		return nil, fmt.Errorf("%s contained no valid PEM certificate", description)
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("%s certificate did not parse: %w", description, err)
+	}
+	return certificate, nil
+}
+
+func (c *Client) fetchAgentInfo(addr, code string) (*x509.Certificate, error) {
+	client := unverifiedHTTPClient()
+	defer client.CloseIdleConnections()
+
+	response, err := client.Get("https://" + addr + "/pair")
+	if err != nil {
+		return nil, fmt.Errorf("contacting agent at %s: %w", addr, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("agent returned unexpected pairing-info status %d", response.StatusCode)
+	}
+
+	var info pairInfoResponse
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxPairRequestBytes)).Decode(&info); err != nil {
+		return nil, fmt.Errorf("decoding agent pairing information: %w", err)
+	}
+	agentCert, err := decodeCertificate(info.AgentCertPEM, "agent pairing information")
+	if err != nil {
+		return nil, err
+	}
+	if !validProof(code, info.AgentProof, agentCert.Raw) {
+		return nil, fmt.Errorf("pairing code did not authenticate the Agent certificate")
+	}
+	return agentCert, nil
+}
+
+// Pair authenticates the Agent certificate with the out-of-band code, then
+// sends a proof binding that Agent certificate, the Orchestrator certificate,
+// and the recorded Tailnet hostname. The code itself is never transmitted.
 func (c *Client) Pair(addr, code string) (*PairResult, error) {
 	orchestratorHostname, err := registry.SelfHostname()
 	if err != nil {
 		return nil, fmt.Errorf("determining Orchestrator Tailnet hostname: %w", err)
 	}
-	orchestratorCertPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: c.orchestratorIdentity.CertDER,
-	})
 
+	agentCert, err := c.fetchAgentInfo(addr, code)
+	if err != nil {
+		return nil, err
+	}
+
+	orchestratorCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.orchestratorIdentity.CertDER})
 	reqBody, err := json.Marshal(pairRequest{
-		PairingCode:          code,
+		PairingProof:         encodeProof(code, agentCert.Raw, c.orchestratorIdentity.CertDER, []byte(orchestratorHostname)),
 		OrchestratorCertPEM:  string(orchestratorCertPEM),
 		OrchestratorHostname: orchestratorHostname,
 	})
@@ -120,51 +132,42 @@ func (c *Client) Pair(addr, code string) (*PairResult, error) {
 		return nil, fmt.Errorf("encoding pairing request: %w", err)
 	}
 
-	resp, err := pairingHTTPClient.Post(
-		"https://"+addr+"/pair",
-		"application/json",
-		bytes.NewReader(reqBody),
-	)
+	client := pinnedHTTPClient(agentCert.Raw)
+	defer client.CloseIdleConnections()
+	response, err := client.Post("https://"+addr+"/pair", "application/json", bytes.NewReader(reqBody))
 	if err != nil {
-		return nil, fmt.Errorf("contacting agent at %s: %w", addr, err)
+		return nil, fmt.Errorf("sending authenticated pairing request to %s: %w", addr, err)
 	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
+	defer response.Body.Close()
+	bodyBytes, err := io.ReadAll(io.LimitReader(response.Body, maxPairRequestBytes))
 	if err != nil {
-		return nil, fmt.Errorf("reading response from agent at %s: %w", addr, err)
+		return nil, fmt.Errorf("reading pairing response from agent at %s: %w", addr, err)
 	}
-
-	if resp.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusOK {
 		var errResp pairErrorResponse
-		if jsonErr := json.Unmarshal(bodyBytes, &errResp); jsonErr == nil && errResp.Error != "" {
-			return nil, fmt.Errorf("agent rejected pairing (%d): %s", resp.StatusCode, errResp.Error)
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error != "" {
+			return nil, fmt.Errorf("agent rejected pairing (%d): %s", response.StatusCode, errResp.Error)
 		}
-		return nil, fmt.Errorf("agent returned unexpected status %d", resp.StatusCode)
+		return nil, fmt.Errorf("agent returned unexpected status %d", response.StatusCode)
 	}
 
 	var okResp pairResponse
 	if err := json.Unmarshal(bodyBytes, &okResp); err != nil {
-		return nil, fmt.Errorf("decoding agent's response: %w", err)
+		return nil, fmt.Errorf("decoding pairing response: %w", err)
 	}
-
-	block, _ := pem.Decode([]byte(okResp.AgentCertPEM))
-	if block == nil {
-		return nil, fmt.Errorf("agent's response contained no valid PEM certificate")
-	}
-	agentCert, err := x509.ParseCertificate(block.Bytes)
+	returnedCert, err := decodeCertificate(okResp.AgentCertPEM, "pairing response")
 	if err != nil {
-		return nil, fmt.Errorf("agent's certificate did not parse: %w", err)
+		return nil, err
+	}
+	if subtle.ConstantTimeCompare(returnedCert.Raw, agentCert.Raw) != 1 {
+		return nil, fmt.Errorf("pairing response returned a different Agent certificate")
+	}
+	if agentCert.Subject.CommonName == "" {
+		return nil, fmt.Errorf("agent certificate has no CommonName to identify it by")
+	}
+	if err := trust.Pin(agentCert.Subject.CommonName, agentCert.Raw); err != nil {
+		return nil, fmt.Errorf("pairing succeeded but pinning Agent certificate failed: %w", err)
 	}
 
-	agentHostname := agentCert.Subject.CommonName
-	if agentHostname == "" {
-		return nil, fmt.Errorf("agent's certificate has no CommonName to identify it by")
-	}
-
-	if err := trust.Pin(agentHostname, block.Bytes); err != nil {
-		return nil, fmt.Errorf("pairing succeeded but pinning agent certificate failed: %w", err)
-	}
-
-	return &PairResult{AgentHostname: agentHostname}, nil
+	return &PairResult{AgentHostname: agentCert.Subject.CommonName}, nil
 }
