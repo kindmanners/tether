@@ -1,9 +1,9 @@
 nodes:
-  - hostname: ataraxia
+  - hostname: =examples
     role: rpc-node
     agent_port: 7420
     rpc_port: 50052
-  - hostname: mathesis
+  - hostname: examplesv2
     role: rpc-node
     agent_port: 7420
-    rpc_port: 50053
+    rpc_port: 50052

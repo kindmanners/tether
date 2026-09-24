@@ -60,7 +60,7 @@ Tether consists of three primary components:
 
 `tether` and `tether-agent` are Wails desktop applications. Their HTML, CSS,
 and JavaScript assets are embedded in the Go binaries, so no Node installation
-is required to build the checked-in interface. Install Go 1.22 or later and
+is required to build the checked-in interface. Install Go 1.27 or later and
 the platform dependencies required by Wails, then build the desktop pair from
 the repository root:
 
@@ -218,11 +218,6 @@ rpc_server_path: 'C:\path\to\llama.cpp\build-rpc-cuda\bin\Release\ggml-rpc-serve
 rpc_listen_host: '100.x.y.z' # this node's Tailscale IPv4 address
 ```
 
-Allow Tailnet access to TCP 7420 (Agent control) and the configured RPC port,
-both in your Tailnet ACLs and Windows Firewall. Do not expose the RPC server to
-a public network. On Mathesis, use TCP **50053**: TCP 50052 is occupied by
-Incredibuild `LicenseService.exe` (see `HANDOFF.md`).
-
 For an automated Windows GPU-node audit/provisioning flow, including CUDA
 toolchain checks, port collision detection, firewall setup, and the pinned
 llama.cpp CUDA RPC build, see
@@ -309,7 +304,7 @@ is willing to run:
 
 ```yaml
 rpc_server_path: /opt/llama.cpp/build/bin/ggml-rpc-server
-rpc_listen_host: 100.64.246.74
+rpc_listen_host: 100.xxx.xx
 ```
 
 ### Controlling an Agent
@@ -372,28 +367,14 @@ Tech Stack
 
 ## License
 
-// Copyright (C) 2026 kindmanners on github
-//
-// This program is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Affero General Public License as
-// published by the Free Software Foundation, either version 3 of the
-// License, or (at your option) any later version.
-//
-// This program is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-// GNU Affero General Public License for more details.
-//
-// You should have received a copy of the GNU Affero General Public License
-// along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+Tether is licensed under the [GNU Affero General Public License v3.0](LICENSE).
 
 ## AI Coding Assistants
 
 If you are using an LLM or AI-powered coding assistant, you MUST read and follow
 the AI contribution requirements before contributing to Tether:
 
-* CONTRIBUTING.md#ai-coding-assistants
+* [AI contribution requirements](CONTRIBUTING.md#ai-coding-assistants)
 
 Contributors remain responsible for the correctness, security, licensing, and
 provenance of all submitted code, including AI-assisted contributions.

@@ -7,7 +7,7 @@ Tether is currently under active development. Security fixes are provided for th
 | Version                  | Supported          |
 | ------------------------ | ------------------ |
 | Latest release           | :white_check_mark: |
-| `main` development branch | :white_check_mark: |
+| `master` development branch | :white_check_mark: |
 | Older releases           | :x:                |
 
 Users are encouraged to update to the latest available version before reporting a vulnerability that may already have been fixed.
