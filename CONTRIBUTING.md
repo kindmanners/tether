@@ -131,7 +131,7 @@ Before submitting AI-assisted code, you must:
 - Verify security-sensitive changes manually, especially changes involving authentication, pairing, mTLS, networking, agent control, or API access.
 - Clearly disclose substantial AI assistance in the pull request when it materially contributed to the implementation.
 
-AI-generated output must not be treated as authoritative. Contributors are expected to validate technical correctness, licensing, security, and compatibility before submission. Refer to [LLM's.md](LLM's.md)
+AI-generated output must not be treated as authoritative. Contributors are expected to validate technical correctness, licensing, security, and compatibility before submission. Refer to [LLMs.md](LLM's.md)
 
 ## License
 
