@@ -9,7 +9,8 @@ library and Tether-managed llama.cpp workers. It provides:
 Start it with a llama.cpp `llama-server` that has RPC support:
 
 ```bash
-go run ./cmd/tether-api --listen 127.0.0.1:11435 --rpc auto
+TETHER_API_KEY="replace-with-a-strong-random-token" \
+  go run ./cmd/tether-api --listen 127.0.0.1:11435 --rpc auto
 ```
 
 The default model directory is `~/models`. Choose another directory or server
@@ -17,6 +18,7 @@ binary explicitly when necessary:
 
 ```bash
 tether-api \
+  --api-key "replace-with-a-strong-random-token" \
   --models-dir /path/to/gguf-models \
   --llama-server /path/to/llama-server \
   --rpc auto
@@ -41,9 +43,12 @@ Set an OpenAI-compatible client base URL to:
 http://127.0.0.1:11435/v1
 ```
 
-The loopback default needs no API key. If you intentionally bind beyond the
-local machine, `--api-key` is required; use a strong secret and restrict
-network access to trusted Tailnet or LAN clients.
+Every request needs the API key as a Bearer token, including requests over
+loopback. The desktop app generates a fresh key when it starts, passes it to
+the gateway through the environment, and displays it beside the endpoint for
+local client configuration. Standalone launches must set `--api-key` or the
+`TETHER_API_KEY` environment variable. Continue to restrict non-loopback
+listeners to trusted Tailnet or LAN clients.
 
 The gateway keeps one worker per loaded model. By default it unloads an idle
 worker after five minutes. Use `--idle-unload 0` to disable that behaviour, or

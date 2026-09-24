@@ -208,6 +208,7 @@ async function refresh({ quiet = false } = {}) {
     document.querySelector('#gateway-state').textContent = state.gateway.running ? 'Gateway running' : 'Gateway stopped';
     document.querySelector('#gateway-detail').textContent = state.gateway.detail;
     document.querySelector('#gateway-endpoint').textContent = state.gateway.endpoint;
+    document.querySelector('#gateway-api-key').textContent = state.gateway.apiKey ? `API key: ${state.gateway.apiKey}` : '';
     const startGateway = document.querySelector('#start-gateway');
     startGateway.hidden = state.gateway.running;
     startGateway.disabled = !state.gateway.available || !state.backend.ready;

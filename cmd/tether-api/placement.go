@@ -18,7 +18,6 @@ package main
 import (
 	"fmt"
 	"math"
-	"os"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -26,6 +25,7 @@ import (
 
 	"tether/internal/agent"
 	"tether/internal/certs"
+	"tether/internal/gguf"
 	"tether/internal/placement"
 	"tether/internal/registry"
 	"tether/internal/trust"
@@ -35,11 +35,11 @@ import (
 // model worker is launched. A running worker is intentionally reused; its
 // reservation is already accounted for by the node it occupies.
 func (g *gateway) planFor(modelPath string) (placement.Plan, error) {
-	info, err := os.Stat(modelPath)
+	size, err := gguf.Size(modelPath)
 	if err != nil {
 		return placement.Plan{}, fmt.Errorf("checking model file: %w", err)
 	}
-	modelBytes := int64(math.Ceil(float64(info.Size()) * g.cfg.modelOverhead))
+	modelBytes := int64(math.Ceil(float64(size) * g.cfg.modelOverhead))
 	requirement := placement.Requirement{ModelBytes: modelBytes, KVCacheBytes: int64(g.cfg.ctxSize) * g.cfg.kvBytesPerToken}
 	switch strings.ToLower(strings.TrimSpace(g.cfg.rpcMode)) {
 	case "", "none":

@@ -37,15 +37,28 @@ type modelGatewayClient interface {
 
 type localModelGatewayClient struct {
 	baseURL string
+	apiKey  string
 	client  *http.Client
 }
 
-func newLocalModelGatewayClient() *localModelGatewayClient {
-	return &localModelGatewayClient{baseURL: modelGatewayURL, client: &http.Client{Timeout: 15 * time.Second}}
+func newLocalModelGatewayClient(apiKey string) *localModelGatewayClient {
+	return &localModelGatewayClient{baseURL: modelGatewayURL, apiKey: apiKey, client: &http.Client{Timeout: 15 * time.Second}}
+}
+
+func (c *localModelGatewayClient) request(method, target string) (*http.Request, error) {
+	request, err := http.NewRequest(method, target, nil)
+	if err == nil {
+		request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	return request, err
 }
 
 func (c *localModelGatewayClient) States() (map[string]gatewayModelState, error) {
-	response, err := c.client.Get(c.baseURL + "/api/v1/model-states")
+	request, err := c.request(http.MethodGet, c.baseURL+"/api/v1/model-states")
+	if err != nil {
+		return nil, err
+	}
+	response, err := c.client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +80,7 @@ func (c *localModelGatewayClient) States() (map[string]gatewayModelState, error)
 }
 
 func (c *localModelGatewayClient) Action(modelID, action string) error {
-	request, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/v1/models/"+url.PathEscape(modelID)+"/"+action, nil)
+	request, err := c.request(http.MethodPost, c.baseURL+"/api/v1/models/"+url.PathEscape(modelID)+"/"+action)
 	if err != nil {
 		return err
 	}
@@ -84,7 +97,7 @@ func (c *localModelGatewayClient) Action(modelID, action string) error {
 }
 
 func (c *localModelGatewayClient) Refresh() error {
-	request, err := http.NewRequest(http.MethodPost, c.baseURL+"/api/v1/models/refresh", nil)
+	request, err := c.request(http.MethodPost, c.baseURL+"/api/v1/models/refresh")
 	if err != nil {
 		return err
 	}
@@ -100,7 +113,7 @@ func (c *localModelGatewayClient) Refresh() error {
 }
 
 func (c *localModelGatewayClient) Plan(modelID string) (*ModelPlacementPlan, error) {
-	request, err := http.NewRequest(http.MethodGet, c.baseURL+"/api/v1/models/"+url.PathEscape(modelID)+"/plan", nil)
+	request, err := c.request(http.MethodGet, c.baseURL+"/api/v1/models/"+url.PathEscape(modelID)+"/plan")
 	if err != nil {
 		return nil, err
 	}

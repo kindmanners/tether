@@ -17,7 +17,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,6 +37,7 @@ import (
 	"tether/internal/agent"
 	"tether/internal/certs"
 	"tether/internal/executil"
+	"tether/internal/gguf"
 	"tether/internal/orchestratorconfig"
 	"tether/internal/pairing"
 	"tether/internal/registry"
@@ -64,6 +67,7 @@ type OrchestratorApp struct {
 	modelDownload   ModelDownload
 	downloadCancel  context.CancelFunc
 	gatewayDone     chan struct{}
+	gatewayAPIKey   string
 	modelGateway    modelGatewayClient
 }
 
@@ -116,6 +120,7 @@ type GatewayState struct {
 	Available bool   `json:"available"`
 	Detail    string `json:"detail"`
 	Endpoint  string `json:"endpoint"`
+	APIKey    string `json:"apiKey"`
 }
 
 // ModelLibrary is the Orchestrator's local GGUF inventory plus the gateway's
@@ -166,6 +171,11 @@ type TailnetCandidate struct {
 }
 
 func NewOrchestratorApp(allowlistPath string) *OrchestratorApp {
+	gatewayAPIKey := make([]byte, 32)
+	if _, err := rand.Read(gatewayAPIKey); err != nil {
+		panic(fmt.Sprintf("creating local gateway credential: %v", err))
+	}
+	encodedGatewayAPIKey := base64.RawURLEncoding.EncodeToString(gatewayAPIKey)
 	configPath, err := orchestratorconfig.DefaultPath()
 	if err != nil {
 		// Snapshot and StartGateway return a readable error if this unusual
@@ -180,7 +190,8 @@ func NewOrchestratorApp(allowlistPath string) *OrchestratorApp {
 		allowlistPath: allowlistPath,
 		configPath:    configPath,
 		usageHistory:  make(map[string][]NodeUsageSample),
-		modelGateway:  newLocalModelGatewayClient(),
+		gatewayAPIKey: encodedGatewayAPIKey,
+		modelGateway:  newLocalModelGatewayClient(encodedGatewayAPIKey),
 	}
 }
 
@@ -689,7 +700,7 @@ func (a *OrchestratorApp) StartGateway() error {
 		a.gatewayStarting = false
 		a.mu.Unlock()
 	}()
-	if gatewayEndpointReady() {
+	if gatewayEndpointInUse() {
 		return fmt.Errorf("the local gateway endpoint %s is already in use by a process Tether does not own", modelGatewayURL)
 	}
 	path, err := siblingExecutable("tether-api")
@@ -721,6 +732,7 @@ func (a *OrchestratorApp) StartGateway() error {
 	}
 	command := exec.Command(path, arguments...)
 	command.Env = localBackendEnvironment(config)
+	command.Env = append(command.Env, "TETHER_API_KEY="+a.gatewayAPIKey)
 	executil.IsolateProcessTree(command)
 	cacheRoot, err := os.UserCacheDir()
 	if err != nil {
@@ -775,7 +787,9 @@ func (a *OrchestratorApp) StartGateway() error {
 			return fmt.Errorf("%s", detail)
 		default:
 		}
-		response, requestErr := client.Get(modelGatewayURL + "/v1/models")
+		request, _ := http.NewRequest(http.MethodGet, modelGatewayURL+"/v1/models", nil)
+		request.Header.Set("Authorization", "Bearer "+a.gatewayAPIKey)
+		response, requestErr := client.Do(request)
 		if requestErr == nil {
 			response.Body.Close()
 			if response.StatusCode == http.StatusOK {
@@ -785,7 +799,7 @@ func (a *OrchestratorApp) StartGateway() error {
 					continue
 				default:
 				}
-				if gatewayEndpointReady() {
+				if gatewayEndpointReady(a.gatewayAPIKey) {
 					a.mu.Lock()
 					a.gatewayError = ""
 					a.mu.Unlock()
@@ -808,8 +822,19 @@ func (a *OrchestratorApp) StartGateway() error {
 	return fmt.Errorf("%s", detail)
 }
 
-func gatewayEndpointReady() bool {
+func gatewayEndpointInUse() bool {
 	response, err := (&http.Client{Timeout: 500 * time.Millisecond}).Get(modelGatewayURL + "/v1/models")
+	if err != nil {
+		return false
+	}
+	response.Body.Close()
+	return true
+}
+
+func gatewayEndpointReady(apiKey string) bool {
+	request, _ := http.NewRequest(http.MethodGet, modelGatewayURL+"/v1/models", nil)
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	response, err := (&http.Client{Timeout: 500 * time.Millisecond}).Do(request)
 	if err != nil {
 		return false
 	}
@@ -830,6 +855,7 @@ func (a *OrchestratorApp) stopGateway() error {
 
 	request, err := http.NewRequest(http.MethodPost, modelGatewayURL+"/api/v1/internal/shutdown", nil)
 	if err == nil {
+		request.Header.Set("Authorization", "Bearer "+a.gatewayAPIKey)
 		response, requestErr := (&http.Client{Timeout: 5 * time.Second}).Do(request)
 		if requestErr == nil {
 			response.Body.Close()
@@ -865,7 +891,7 @@ func (a *OrchestratorApp) gatewayState() GatewayState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	path, err := siblingExecutable("tether-api")
-	state := GatewayState{Endpoint: "http://127.0.0.1:11435/v1"}
+	state := GatewayState{Endpoint: "http://127.0.0.1:11435/v1", APIKey: a.gatewayAPIKey}
 	if err != nil {
 		state.Detail = err.Error()
 		return state
@@ -1265,7 +1291,7 @@ func (a *OrchestratorApp) gatewayClient() modelGatewayClient {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.modelGateway == nil {
-		a.modelGateway = newLocalModelGatewayClient()
+		a.modelGateway = newLocalModelGatewayClient(a.gatewayAPIKey)
 	}
 	return a.modelGateway
 }
@@ -1300,26 +1326,12 @@ func defaultModelsDirectory() (string, error) {
 
 func scanDesktopModels(directory string) ([]DesktopModel, error) {
 	models := make([]DesktopModel, 0)
-	err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".gguf") {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		filename := entry.Name()
-		models = append(models, DesktopModel{ID: strings.TrimSuffix(filename, filepath.Ext(filename)), Filename: filename, Path: path, SizeBytes: info.Size(), State: "unloaded"})
-		return nil
-	})
-	if os.IsNotExist(err) {
-		return models, nil
-	}
+	entries, err := gguf.Scan(directory)
 	if err != nil {
-		return nil, fmt.Errorf("scanning model library %q: %w", directory, err)
+		return nil, err
+	}
+	for _, entry := range entries {
+		models = append(models, DesktopModel{ID: entry.ID, Filename: entry.Filename, Path: entry.Path, SizeBytes: entry.Size, State: "unloaded"})
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil

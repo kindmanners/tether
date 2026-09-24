@@ -30,6 +30,16 @@ func TestSelectPrefersOneNodeThatFits(t *testing.T) {
 	}
 }
 
+func TestSelectPinsWholeModelToChosenLocalGPU(t *testing.T) {
+	plan, err := Select([]Node{{Hostname: "orchestrator", Local: true, GPUFreeBytes: []int64{4, 12}}}, Requirement{ModelBytes: 7, KVCacheBytes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Nodes[0].Device; got != "CUDA1" {
+		t.Fatalf("selected device = %q, want CUDA1", got)
+	}
+}
+
 func TestSelectFallsBackToMesh(t *testing.T) {
 	plan, err := Select([]Node{
 		{Hostname: "one", GPUFreeBytes: []int64{4}},

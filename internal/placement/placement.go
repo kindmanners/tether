@@ -29,6 +29,7 @@ type Node struct {
 	Hostname     string
 	Endpoint     string
 	Local        bool
+	Device       string
 	GPUFreeBytes []int64
 }
 
@@ -76,6 +77,9 @@ func Select(nodes []Node, requirement Requirement) (Plan, error) {
 		return left > right
 	})
 	if largest(usable[0].GPUFreeBytes) >= need {
+		if usable[0].Local {
+			usable[0].Device = fmt.Sprintf("CUDA%d", largestIndex(usable[0].GPUFreeBytes))
+		}
 		return Plan{Mode: "whole", Nodes: []Node{usable[0]}, Requirement: requirement}, nil
 	}
 
@@ -101,4 +105,14 @@ func largest(values []int64) int64 {
 		}
 	}
 	return result
+}
+
+func largestIndex(values []int64) int {
+	index := 0
+	for i := 1; i < len(values); i++ {
+		if values[i] > values[index] {
+			index = i
+		}
+	}
+	return index
 }

@@ -60,7 +60,7 @@ func main() {
 	localGPURequested := flag.Bool("local-gpu", true, "allow this Orchestrator to contribute its local CUDA GPU")
 	rpc := flag.String("rpc", "auto", "comma-separated RPC endpoints, auto, or none")
 	allowlistPath := flag.String("allowlist", "node_allowlist.yaml", "path to Tether node allowlist for --rpc auto")
-	apiKey := flag.String("api-key", "", "API key required by non-local clients")
+	apiKey := flag.String("api-key", os.Getenv("TETHER_API_KEY"), "API key required by every client (or set TETHER_API_KEY)")
 	ctxSize := flag.Int("ctx-size", 8192, "context size per loaded model")
 	parallel := flag.Int("parallel", 2, "parallel requests per loaded model")
 	idleUnload := flag.Duration("idle-unload", 5*time.Minute, "unload an idle model worker after this duration; 0 disables idle unload")
@@ -81,8 +81,8 @@ func main() {
 	if err != nil || host == "" || port == "" {
 		log.Fatalf("-listen must be a host:port, for example 127.0.0.1:11435")
 	}
-	if !isLoopbackHost(host) && *apiKey == "" {
-		log.Fatal("-api-key is required when -listen is reachable beyond this machine")
+	if *apiKey == "" {
+		log.Fatal("-api-key or TETHER_API_KEY is required")
 	}
 	if *ctxSize < 1 || *parallel < 1 || *idleUnload < 0 || *workerStartTimeout <= 0 || *modelOverhead < 1 || *kvBytesPerToken < 0 {
 		log.Fatal("-ctx-size, -parallel, and -worker-start-timeout must be positive; -idle-unload and -kv-cache-bytes-per-token cannot be negative; -model-overhead must be at least 1")

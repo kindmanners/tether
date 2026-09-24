@@ -18,22 +18,26 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"tether/internal/executil"
+	"tether/internal/gguf"
 	"tether/internal/placement"
 )
 
@@ -52,6 +56,7 @@ type gatewayConfig struct {
 	kvBytesPerToken    int64
 	requestShutdown    func()
 	planner            func(string) (placement.Plan, error)
+	launcher           func(context.Context, string, string, placement.Plan) (*modelWorker, error)
 }
 
 type modelWorker struct {
@@ -61,6 +66,9 @@ type modelWorker struct {
 	plan    placement.Plan
 	address string
 	cmd     *exec.Cmd
+	done    chan struct{}
+	exitErr error
+	apiKey  string
 	active  int
 	state   string
 	lastUse time.Time
@@ -72,9 +80,11 @@ type gateway struct {
 	cfg     gatewayConfig
 	models  map[string]string
 	mu      sync.Mutex
+	loadMu  sync.Mutex
 	workers map[string]*modelWorker
 	states  map[string]modelState
-	client  *http.Client
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 type modelState struct {
@@ -105,33 +115,21 @@ func newGateway(cfg gatewayConfig) (*gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &gateway{
 		cfg: cfg, models: models, workers: make(map[string]*modelWorker),
-		states: make(map[string]modelState), client: &http.Client{Timeout: 0},
+		states: make(map[string]modelState), ctx: ctx, cancel: cancel,
 	}, nil
 }
 
 func scanGatewayModels(dir string) (map[string]string, error) {
 	models := make(map[string]string)
-	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".gguf") {
-			return nil
-		}
-		id := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-		if _, exists := models[id]; exists {
-			return fmt.Errorf("duplicate model id %q; GGUF file names must be unique", id)
-		}
-		models[id] = path
-		return nil
-	})
-	if os.IsNotExist(err) {
-		return models, nil
-	}
+	entries, err := gguf.Scan(dir)
 	if err != nil {
-		return nil, fmt.Errorf("scanning GGUF models in %q: %w", dir, err)
+		return nil, err
+	}
+	for _, entry := range entries {
+		models[entry.ID] = entry.Path
 	}
 	return models, nil
 }
@@ -140,6 +138,10 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !g.authorized(r) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if !validRequestHost(r.Host) || !validRequestOrigin(r) {
+		http.Error(w, "forbidden request origin", http.StatusForbidden)
 		return
 	}
 	if r.URL.Path == "/api/v1/model-states" {
@@ -156,7 +158,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := g.refreshModels(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			g.internalError(w, "refreshing model library", err, http.StatusInternalServerError)
 			return
 		}
 		g.writeStates(w)
@@ -207,7 +209,7 @@ func (g *gateway) handleModelPlan(w http.ResponseWriter, r *http.Request) {
 	}
 	plan, err := g.modelPlan(modelID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		g.internalError(w, "planning model placement", err, http.StatusServiceUnavailable)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -221,7 +223,7 @@ func (g *gateway) modelPlan(modelID string) (modelPlan, error) {
 	if !ok {
 		return modelPlan{}, fmt.Errorf("model %q is not in Tether's GGUF library", modelID)
 	}
-	info, err := os.Stat(path)
+	size, err := gguf.Size(path)
 	if err != nil {
 		return modelPlan{}, fmt.Errorf("reading model %q: %w", modelID, err)
 	}
@@ -234,7 +236,7 @@ func (g *gateway) modelPlan(modelID string) (modelPlan, error) {
 		return modelPlan{}, err
 	}
 	return modelPlan{
-		Model: modelID, SizeBytes: info.Size(), ModelReserveBytes: placementPlan.Requirement.ModelBytes,
+		Model: modelID, SizeBytes: size, ModelReserveBytes: placementPlan.Requirement.ModelBytes,
 		KVCacheBytes: placementPlan.Requirement.KVCacheBytes, ReserveBytes: placementPlan.Requirement.TotalBytes(),
 		Mode: string(placementPlan.Mode), Nodes: planNodeNames(placementPlan), ObservedAt: time.Now().UTC().Format(time.RFC3339),
 		Detail: "Preview only; capacity is checked again when loading starts.",
@@ -258,7 +260,7 @@ func (g *gateway) handleModelAction(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
 			return
 		}
-		err = g.load(modelID)
+		err = g.load(r.Context(), modelID)
 	case "unload":
 		if r.Method != http.MethodPost {
 			http.Error(w, "only POST is supported", http.StatusMethodNotAllowed)
@@ -270,17 +272,39 @@ func (g *gateway) handleModelAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		g.internalError(w, "performing model action", err, http.StatusServiceUnavailable)
 		return
 	}
 	g.writeStates(w)
 }
 
 func (g *gateway) authorized(r *http.Request) bool {
-	if g.cfg.apiKey == "" {
+	want := []byte("Bearer " + g.cfg.apiKey)
+	got := []byte(r.Header.Get("Authorization"))
+	return g.cfg.apiKey != "" && len(got) == len(want) && subtle.ConstantTimeCompare(got, want) == 1
+}
+
+func validRequestHost(hostport string) bool {
+	host := hostport
+	if parsed, _, err := net.SplitHostPort(hostport); err == nil {
+		host = parsed
+	}
+	host = strings.Trim(host, "[]")
+	return strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil
+}
+
+func validRequestOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
 		return true
 	}
-	return r.Header.Get("Authorization") == "Bearer "+g.cfg.apiKey
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Host, r.Host) && (parsed.Scheme == "http" || parsed.Scheme == "https")
+}
+
+func (g *gateway) internalError(w http.ResponseWriter, operation string, err error, status int) {
+	log.Printf("%s: %v", operation, err)
+	http.Error(w, operation+" failed", status)
 }
 
 func (g *gateway) writeModels(w http.ResponseWriter) {
@@ -312,85 +336,72 @@ func (g *gateway) handleChat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a JSON request with a model is required", http.StatusBadRequest)
 		return
 	}
-	worker, err := g.acquire(request.Model)
+	worker, err := g.acquire(r.Context(), request.Model)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		g.internalError(w, "loading model worker", err, http.StatusServiceUnavailable)
 		return
 	}
 	defer g.release(worker)
 
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "http://"+worker.address+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	proxy := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetURL(&url.URL{Scheme: "http", Host: worker.address})
+			pr.Out.Header.Del("Authorization")
+			pr.Out.Header.Del("Cookie")
+			pr.Out.Header.Set("Authorization", "Bearer "+worker.apiKey)
+		},
+		FlushInterval: -1,
+		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, proxyErr error) {
+			log.Printf("model worker proxy failed for %s: %v", worker.modelID, proxyErr)
+			http.Error(rw, "model worker request failed", http.StatusBadGateway)
+		},
 	}
-	upstream.Header = r.Header.Clone()
-	upstream.Header.Del("Authorization")
-	upstream.Host = ""
-	resp, err := g.client.Do(upstream)
-	if err != nil {
-		http.Error(w, "model worker request failed: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	for key, values := range resp.Header {
-		if strings.EqualFold(key, "Content-Length") || strings.EqualFold(key, "Connection") {
-			continue
-		}
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	proxy.ServeHTTP(w, r)
 }
 
-func (g *gateway) acquire(modelID string) (*modelWorker, error) {
+func (g *gateway) acquire(ctx context.Context, modelID string) (*modelWorker, error) {
 	g.mu.Lock()
 	if worker := g.workerForModelLocked(modelID); worker != nil {
-		if worker.timer != nil {
-			worker.timer.Stop()
-			worker.timer = nil
+		select {
+		case <-worker.done:
+			g.markCrashedLocked(worker)
+		default:
+			result, err := g.activateWorkerLocked(worker)
+			g.mu.Unlock()
+			return result, err
 		}
-		worker.active++
-		worker.state = "loaded"
-		g.recordLocked(worker, "")
-		g.mu.Unlock()
-		return worker, nil
 	}
-	path, ok := g.models[modelID]
-	if !ok {
-		g.mu.Unlock()
-		return nil, fmt.Errorf("model %q is not in Tether's GGUF library", modelID)
-	}
-	g.states[modelID] = modelState{Model: modelID, State: "loading", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	g.mu.Unlock()
 
-	plan, err := g.planFor(path)
+	g.loadMu.Lock()
+	defer g.loadMu.Unlock()
+	worker, err := g.ensureWorkerLocked(ctx, modelID, false)
 	if err != nil {
-		g.setState(modelID, "unloaded", nil, err.Error())
 		return nil, err
 	}
-	worker, err := g.launch(modelID, path, plan)
-	if err != nil {
-		g.setState(modelID, "unloaded", planNodeNames(plan), err.Error())
-		return nil, err
-	}
-
 	g.mu.Lock()
-	// Another same-model request may have completed the expensive launch first.
-	if existing := g.workerForModelLocked(modelID); existing != nil {
-		g.mu.Unlock()
-		_ = executil.KillProcessTree(worker.cmd)
-		_, _ = worker.cmd.Process.Wait()
-		return g.acquire(modelID)
+	defer g.mu.Unlock()
+	return g.activateWorkerLocked(worker)
+}
+
+func (g *gateway) activateWorkerLocked(worker *modelWorker) (*modelWorker, error) {
+	select {
+	case <-worker.done:
+		return nil, fmt.Errorf("model worker exited")
+	default:
 	}
-	worker.key = workerKey(modelID, plan)
-	worker.active = 1
+	if g.workers[worker.key] != worker || worker.state == "unloading" || worker.state == "crashed" {
+		return nil, fmt.Errorf("model worker is not available")
+	}
+	if worker.timer != nil {
+		worker.timer.Stop()
+		worker.timer = nil
+	}
+	worker.active++
 	worker.state = "loaded"
-	g.workers[worker.key] = worker
 	g.recordLocked(worker, "")
-	g.mu.Unlock()
 	return worker, nil
 }
 
@@ -423,55 +434,79 @@ func (g *gateway) release(worker *modelWorker) {
 // until the Models control explicitly unloads it. This makes model placement
 // observable and controllable from the Orchestrator rather than treating the
 // first client prompt as an implicit load command.
-func (g *gateway) load(modelID string) error {
+func (g *gateway) load(ctx context.Context, modelID string) error {
+	g.loadMu.Lock()
+	defer g.loadMu.Unlock()
+	_, err := g.ensureWorkerLocked(ctx, modelID, true)
+	return err
+}
+
+func (g *gateway) ensureWorkerLocked(ctx context.Context, modelID string, pin bool) (*modelWorker, error) {
 	g.mu.Lock()
 	if worker := g.workerForModelLocked(modelID); worker != nil {
-		if worker.timer != nil {
-			worker.timer.Stop()
-			worker.timer = nil
+		exited := false
+		select {
+		case <-worker.done:
+			g.markCrashedLocked(worker)
+			exited = true
+		default:
 		}
-		worker.pinned = true
-		worker.state = "loaded"
-		g.recordLocked(worker, "")
-		g.mu.Unlock()
-		return nil
+		if !exited {
+			if worker.state == "unloading" {
+				g.mu.Unlock()
+				return nil, fmt.Errorf("model %q is unloading", modelID)
+			}
+			if worker.timer != nil {
+				worker.timer.Stop()
+				worker.timer = nil
+			}
+			worker.pinned = worker.pinned || pin
+			worker.state = "loaded"
+			g.recordLocked(worker, "")
+			g.mu.Unlock()
+			return worker, nil
+		}
 	}
 	path, ok := g.models[modelID]
 	if !ok {
 		g.mu.Unlock()
-		return fmt.Errorf("model %q is not in Tether's GGUF library", modelID)
+		return nil, fmt.Errorf("model %q is not in Tether's GGUF library", modelID)
 	}
 	g.states[modelID] = modelState{Model: modelID, State: "loading", UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	g.mu.Unlock()
 
-	plan, err := g.planFor(path)
+	planner := g.cfg.planner
+	if planner == nil {
+		planner = g.planFor
+	}
+	plan, err := planner(path)
 	if err != nil {
 		g.setState(modelID, "unloaded", nil, err.Error())
-		return err
+		return nil, err
 	}
-	worker, err := g.launch(modelID, path, plan)
+	launcher := g.cfg.launcher
+	if launcher == nil {
+		launcher = g.launch
+	}
+	worker, err := launcher(ctx, modelID, path, plan)
 	if err != nil {
 		g.setState(modelID, "unloaded", planNodeNames(plan), err.Error())
-		return err
-	}
-
-	g.mu.Lock()
-	if existing := g.workerForModelLocked(modelID); existing != nil {
-		g.mu.Unlock()
-		_ = executil.KillProcessTree(worker.cmd)
-		_, _ = worker.cmd.Process.Wait()
-		return g.load(modelID)
+		return nil, err
 	}
 	worker.key = workerKey(modelID, plan)
-	worker.pinned = true
+	worker.pinned = pin
 	worker.state = "loaded"
+	g.mu.Lock()
 	g.workers[worker.key] = worker
 	g.recordLocked(worker, "")
 	g.mu.Unlock()
-	return nil
+	go g.watchWorker(worker)
+	return worker, nil
 }
 
 func (g *gateway) unloadModel(modelID string) error {
+	g.loadMu.Lock()
+	defer g.loadMu.Unlock()
 	g.mu.Lock()
 	worker := g.workerForModelLocked(modelID)
 	if worker == nil {
@@ -495,7 +530,9 @@ func (g *gateway) unloadModel(modelID string) error {
 	worker.state = "unloading"
 	g.recordLocked(worker, "")
 	g.mu.Unlock()
-	g.unload(worker)
+	if !g.unloadLocked(worker) {
+		return fmt.Errorf("model %q could not be unloaded because it became active", modelID)
+	}
 	return nil
 }
 
@@ -529,16 +566,22 @@ func (g *gateway) refreshModels() error {
 }
 
 func (g *gateway) unload(worker *modelWorker) {
+	g.loadMu.Lock()
+	defer g.loadMu.Unlock()
+	g.unloadLocked(worker)
+}
+
+func (g *gateway) unloadLocked(worker *modelWorker) bool {
 	g.mu.Lock()
 	if g.workers[worker.key] != worker || worker.active != 0 {
 		g.mu.Unlock()
-		return
+		return false
 	}
 	worker.state = "unloading"
 	g.recordLocked(worker, "")
 	g.mu.Unlock()
 	_ = executil.KillProcessTree(worker.cmd)
-	_, _ = worker.cmd.Process.Wait()
+	<-worker.done
 	g.mu.Lock()
 	if g.workers[worker.key] == worker {
 		delete(g.workers, worker.key)
@@ -549,9 +592,10 @@ func (g *gateway) unload(worker *modelWorker) {
 		}
 	}
 	g.mu.Unlock()
+	return true
 }
 
-func (g *gateway) launch(modelID, modelPath string, plan placement.Plan) (*modelWorker, error) {
+func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan placement.Plan) (*modelWorker, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("reserving worker port: %w", err)
@@ -563,56 +607,135 @@ func (g *gateway) launch(modelID, modelPath string, plan placement.Plan) (*model
 	if len(endpoints) > 0 {
 		args = append(args, "--rpc", strings.Join(endpoints, ","))
 	}
-	cmd := exec.Command(g.cfg.llamaServer, args...)
+	apiKey, err := randomToken(32)
+	if err != nil {
+		return nil, fmt.Errorf("creating model worker credential: %w", err)
+	}
+	for _, node := range plan.Nodes {
+		if node.Local && node.Device != "" && plan.Mode == "whole" {
+			args = append(args, "--device", node.Device)
+		}
+	}
+	cmd := exec.CommandContext(g.ctx, g.cfg.llamaServer, args...)
 	executil.IsolateProcessTree(cmd)
+	cmd.Cancel = func() error { return executil.KillProcessTree(cmd) }
+	cmd.WaitDelay = 5 * time.Second
+	cmd.Env = append(os.Environ(), "LLAMA_API_KEY="+apiKey)
+	if !planUsesLocalGPU(plan) {
+		cmd.Env = append(cmd.Env, "CUDA_VISIBLE_DEVICES=", "GGML_CUDA_VISIBLE_DEVICES=")
+	}
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Start(); err != nil {
+	releaseLifetime, err := executil.StartWithParentLifetime(cmd)
+	if err != nil {
 		return nil, fmt.Errorf("starting model worker: %w", err)
 	}
-	if err := waitForWorker(address, cmd, g.cfg.workerStartTimeout); err != nil {
+	worker := &modelWorker{modelID: modelID, model: modelPath, plan: plan, address: address, cmd: cmd, done: make(chan struct{}), apiKey: apiKey}
+	go func() {
+		worker.exitErr = cmd.Wait()
+		releaseLifetime()
+		close(worker.done)
+	}()
+	if err := waitForWorker(ctx, address, worker, g.cfg.workerStartTimeout); err != nil {
 		_ = executil.KillProcessTree(cmd)
-		_, _ = cmd.Process.Wait()
+		<-worker.done
 		return nil, err
 	}
 	log.Printf("loaded %s using %s placement on %s", modelID, plan.Mode, strings.Join(planNodeNames(plan), ", "))
-	return &modelWorker{modelID: modelID, model: modelPath, plan: plan, address: address, cmd: cmd}, nil
+	return worker, nil
 }
 
-func waitForWorker(address string, cmd *exec.Cmd, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+func waitForWorker(ctx context.Context, address string, worker *modelWorker, timeout time.Duration) error {
+	startupCtx, cancelStartup := context.WithTimeout(ctx, timeout)
+	defer cancelStartup()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 	client := &http.Client{Timeout: time.Second}
-	for time.Now().Before(deadline) {
-		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-			return fmt.Errorf("model worker exited during startup")
-		}
-		probeTimeout := time.Until(deadline)
-		if probeTimeout > time.Second {
-			probeTimeout = time.Second
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/health", nil)
+	probe := func() (bool, error) {
+		probeCtx, cancel := context.WithTimeout(startupCtx, time.Second)
+		defer cancel()
+		request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+address+"/health", nil)
 		if err != nil {
-			cancel()
-			return fmt.Errorf("creating worker readiness probe: %w", err)
+			return false, fmt.Errorf("creating worker readiness probe: %w", err)
 		}
 		resp, err := client.Do(request)
-		cancel()
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return nil
+				return true, nil
 			}
 		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		if remaining > 200*time.Millisecond {
-			remaining = 200 * time.Millisecond
-		}
-		time.Sleep(remaining)
+		return false, nil
 	}
-	return fmt.Errorf("model worker did not become ready within %s", timeout)
+	for {
+		ready, err := probe()
+		if err != nil || ready {
+			return err
+		}
+		select {
+		case <-startupCtx.Done():
+			if ctx.Err() != nil {
+				return fmt.Errorf("model worker startup canceled: %w", ctx.Err())
+			}
+			return fmt.Errorf("model worker did not become ready within %s", timeout)
+		case <-worker.done:
+			return fmt.Errorf("model worker exited during startup: %v", worker.exitErr)
+		case <-ticker.C:
+		}
+	}
+}
+
+func randomToken(bytes int) (string, error) {
+	value := make([]byte, bytes)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func planUsesLocalGPU(plan placement.Plan) bool {
+	for _, node := range plan.Nodes {
+		if node.Local {
+			return true
+		}
+	}
+	return false
+}
+
+func (g *gateway) watchWorker(worker *modelWorker) {
+	<-worker.done
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.workers[worker.key] != worker {
+		return
+	}
+	if worker.state == "unloading" {
+		if worker.timer != nil {
+			worker.timer.Stop()
+			worker.timer = nil
+		}
+		delete(g.workers, worker.key)
+		if _, installed := g.models[worker.modelID]; installed {
+			g.states[worker.modelID] = modelState{Model: worker.modelID, State: "unloaded", Nodes: planNodeNames(worker.plan), UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+		} else {
+			delete(g.states, worker.modelID)
+		}
+		return
+	}
+	g.markCrashedLocked(worker)
+	log.Printf("model worker %s crashed: %v", worker.modelID, worker.exitErr)
+}
+
+func (g *gateway) markCrashedLocked(worker *modelWorker) {
+	if worker.timer != nil {
+		worker.timer.Stop()
+		worker.timer = nil
+	}
+	delete(g.workers, worker.key)
+	detail := "model worker exited unexpectedly"
+	if worker.exitErr != nil {
+		detail = worker.exitErr.Error()
+	}
+	g.states[worker.modelID] = modelState{Model: worker.modelID, State: "crashed", Nodes: planNodeNames(worker.plan), Detail: detail, UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 }
 
 func (g *gateway) setState(model, state string, nodes []string, detail string) {
@@ -656,6 +779,9 @@ func (g *gateway) writeStates(w http.ResponseWriter) {
 }
 
 func (g *gateway) shutdown(ctx context.Context) {
+	g.cancel()
+	g.loadMu.Lock()
+	defer g.loadMu.Unlock()
 	g.mu.Lock()
 	workers := make([]*modelWorker, 0, len(g.workers))
 	for _, worker := range g.workers {
@@ -671,10 +797,8 @@ func (g *gateway) shutdown(ctx context.Context) {
 		}
 	}
 	for _, worker := range workers {
-		done := make(chan struct{})
-		go func(c *exec.Cmd) { _, _ = c.Process.Wait(); close(done) }(worker.cmd)
 		select {
-		case <-done:
+		case <-worker.done:
 		case <-ctx.Done():
 			return
 		}
