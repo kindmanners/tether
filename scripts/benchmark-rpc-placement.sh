@@ -1,4 +1,19 @@
 #!/usr/bin/env bash
+# Copyright (C) 2026 kindmanners on github
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 # Compare a whole-model local run with the current RPC mesh path before using
 # placement results to tune policy.  It retains both llama.cpp logs for review.
 set -euo pipefail

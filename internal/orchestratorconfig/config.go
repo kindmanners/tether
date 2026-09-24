@@ -1,3 +1,18 @@
+// Copyright (C) 2026 kindmanners on github
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 // Package orchestratorconfig stores machine-local Orchestrator preferences.
 // It intentionally lives outside the shared node allowlist: whether the
 // control host contributes its GPU is a decision of that one machine, not a
