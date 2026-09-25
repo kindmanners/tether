@@ -76,17 +76,19 @@ type dashboardModelState struct {
 }
 
 type dashboardResponse struct {
-	ObservedAt  string           `json:"observedAt"`
-	Source      string           `json:"source"`
-	ModelSource string           `json:"modelSource"`
-	Nodes       []dashboardNode  `json:"nodes"`
-	Models      []dashboardModel `json:"models"`
+	ObservedAt      string           `json:"observedAt"`
+	Source          string           `json:"source"`
+	ModelSource     string           `json:"modelSource"`
+	ModelStateError string           `json:"modelStateError,omitempty"`
+	Nodes           []dashboardNode  `json:"nodes"`
+	Models          []dashboardModel `json:"models"`
 }
 
 type dashboardServer struct {
-	allowlistPath string
-	modelsDir     string
-	modelStateURL string
+	allowlistPath    string
+	modelsDir        string
+	modelStateURL    string
+	modelStateAPIKey string
 }
 
 func main() {
@@ -100,13 +102,14 @@ func main() {
 	modelsDir := flag.String("models-dir", defaultModelsDir, "directory containing orchestrator GGUF models")
 	staticDir := flag.String("static-dir", "web/dashboard", "directory containing dashboard HTML assets")
 	modelStateURL := flag.String("model-state-url", "http://127.0.0.1:11435/api/v1/model-states", "Tether API model-state endpoint; empty disables live model states")
+	apiKey := flag.String("api-key", os.Getenv("TETHER_API_KEY"), "API key for the Tether model-state endpoint (or set TETHER_API_KEY)")
 	flag.Parse()
 
 	if info, err := os.Stat(*staticDir); err != nil || !info.IsDir() {
 		log.Fatalf("dashboard assets at %q are unavailable: %v", *staticDir, err)
 	}
 
-	server := &dashboardServer{allowlistPath: *allowlistPath, modelsDir: *modelsDir, modelStateURL: *modelStateURL}
+	server := &dashboardServer{allowlistPath: *allowlistPath, modelsDir: *modelsDir, modelStateURL: *modelStateURL, modelStateAPIKey: *apiKey}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/dashboard", server.handleDashboard)
 	mux.Handle("/", http.FileServer(http.Dir(*staticDir)))
@@ -167,7 +170,10 @@ func (s *dashboardServer) collect() (*dashboardResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	if states, err := fetchModelStates(s.modelStateURL); err == nil {
+	modelStateError := ""
+	if states, err := fetchModelStates(s.modelStateURL, s.modelStateAPIKey); err != nil {
+		modelStateError = err.Error()
+	} else {
 		for i := range models {
 			if state, ok := states[models[i].Name]; ok {
 				models[i].States = []dashboardModelState{state}
@@ -176,11 +182,12 @@ func (s *dashboardServer) collect() (*dashboardResponse, error) {
 	}
 
 	return &dashboardResponse{
-		ObservedAt:  time.Now().UTC().Format(time.RFC3339),
-		Source:      "Live Tailscale registry and paired Tether Agent data",
-		ModelSource: "Scanned orchestrator model directory: " + s.modelsDir,
-		Nodes:       result,
-		Models:      models,
+		ObservedAt:      time.Now().UTC().Format(time.RFC3339),
+		Source:          "Live Tailscale registry and paired Tether Agent data",
+		ModelSource:     "Scanned orchestrator model directory: " + s.modelsDir,
+		ModelStateError: modelStateError,
+		Nodes:           result,
+		Models:          models,
 	}, nil
 }
 
@@ -193,18 +200,28 @@ func sortDashboardNodes(nodes []dashboardNode) {
 	})
 }
 
-func fetchModelStates(url string) (map[string]dashboardModelState, error) {
+func fetchModelStates(url, apiKey string) (map[string]dashboardModelState, error) {
 	if strings.TrimSpace(url) == "" {
 		return nil, nil
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	response, err := client.Get(url)
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, fmt.Errorf("model worker state is unavailable: provide --api-key or TETHER_API_KEY")
+	}
+	request, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating model-state request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	client := &http.Client{Timeout: 2 * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("requesting model worker state: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("model-state endpoint returned %d", response.StatusCode)
+		return nil, fmt.Errorf("model-state endpoint returned %s", response.Status)
 	}
 	var payload struct {
 		Models []struct {

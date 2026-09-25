@@ -100,6 +100,19 @@ Bearer token. On Linux, worker processes use a parent-death signal; on Windows,
 they run in a kill-on-close Job Object. These safeguards prevent model workers
 from being left behind after a gateway crash or forced shutdown.
 
+The independent browser dashboard needs the same API key to include live model
+worker state. Prefer the environment variable so the credential does not appear
+in process listings:
+
+```bash
+TETHER_API_KEY="the-key-shown-by-tether" tether-dashboard
+```
+
+For environments where setting an environment variable is inconvenient,
+`tether-dashboard --api-key <key>` provides the equivalent authenticated
+request. Node and model inventory remain available when the gateway is down;
+the dashboard displays the model-state connection or authentication error.
+
 ## Documentation
 
 The [documentation index](docs/README.md) contains the operational and

@@ -114,7 +114,7 @@ function renderNodes(nodes) {
   }
 }
 
-function renderModels(models) {
+function renderModels(models, modelStateError) {
   const list = byId("models-list");
   const empty = byId("model-empty");
   list.replaceChildren();
@@ -131,7 +131,7 @@ function renderModels(models) {
           const label = String(state.state || "unloaded");
           return `<p class="model-state model-state--${modelStateClass(label)}">${escapeText(label)}<span>${escapeText(nodes + countdown)}</span></p>`;
         }).join("")
-      : '<p class="model-state model-state--unknown">Not reported<span>Start tether-api to report worker state</span></p>';
+      : `<p class="model-state model-state--unknown">Not reported<span>${escapeText(modelStateError || "Start tether-api with the dashboard API key to report worker state")}</span></p>`;
     row.innerHTML = `
       <p class="model-name">${escapeText(model.name)}</p>
       <p class="model-path">${escapeText(model.path || "Path not reported")}</p>
@@ -161,14 +161,19 @@ function render(data, isFallback) {
   byId("model-count").textContent = String(models.length);
   byId("model-summary").textContent = models.length === 1 ? "GGUF model listed" : "GGUF models listed";
   byId("node-source").textContent = data.source || "Live Tether registry and Agent data";
-  byId("model-source").textContent = data.modelSource || data.source || "Live orchestrator model inventory";
+  const modelSource = data.modelSource || data.source || "Live orchestrator model inventory";
+  byId("model-source").textContent = data.modelStateError
+    ? `${modelSource} · Worker state unavailable: ${data.modelStateError}`
+    : modelSource;
   byId("last-updated").textContent = displayTime(data.observedAt || new Date().toISOString(), isFallback);
   document.body.dataset.dataMode = isFallback ? "snapshot" : "live";
   byId("data-freshness").textContent = isFallback
     ? "Offline — showing a recorded handoff snapshot, not current cluster data. Use Tether desktop for operations."
-    : "Live read-only diagnostic view. Use Tether desktop for operations.";
+    : data.modelStateError
+      ? `Live cluster inventory; model worker state is unavailable: ${data.modelStateError}`
+      : "Live read-only diagnostic view. Use Tether desktop for operations.";
   renderNodes(nodes);
-  renderModels(models);
+  renderModels(models, data.modelStateError);
 }
 
 async function refresh() {

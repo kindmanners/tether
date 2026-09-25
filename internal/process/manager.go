@@ -50,6 +50,7 @@ type Status int
 const (
 	StatusStopped Status = iota
 	StatusRunning
+	StatusStopping
 	// StatusCrashed means the process was running but exited on its own
 	// (not via Stop) since the last time its state was checked — distinct
 	// from StatusStopped so a caller can tell "never started" / "we
@@ -63,6 +64,8 @@ func (s Status) String() string {
 	switch s {
 	case StatusRunning:
 		return "Running"
+	case StatusStopping:
+		return "Stopping"
 	case StatusCrashed:
 		return "Crashed"
 	default:
@@ -79,6 +82,7 @@ type Manager struct {
 	mu          sync.Mutex
 	cmd         *exec.Cmd
 	params      StartParams
+	stopping    bool
 	crashed     bool
 	lastExitErr error         // set by watchForExit when crashed becomes true; see LastExitError
 	exitWatchCh chan struct{} // closed when the exit-watching goroutine has recorded the process's outcome
@@ -107,7 +111,12 @@ func (m *Manager) Start(params StartParams) error {
 		"--host", params.Host,
 		"--port", fmt.Sprintf("%d", params.Port),
 	)
-	executil.HideWindow(cmd)
+	// Keep the RPC server in an isolated process tree and bind its lifetime to
+	// the Agent. On Linux this applies a parent-death signal from a dedicated
+	// OS thread; on Windows it assigns the process to a kill-on-close Job
+	// Object. An abrupt Agent exit therefore cannot leave an unmanaged RPC
+	// endpoint behind.
+	executil.IsolateProcessTree(cmd)
 	// ggml-rpc-server reports device discovery, bind failures, and backend
 	// initialization details on its standard streams. Forward them through the
 	// Agent so an operator can diagnose a real hardware launch; leaving these
@@ -115,12 +124,14 @@ func (m *Manager) Start(params StartParams) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	if err := cmd.Start(); err != nil {
+	releaseLifetime, err := executil.StartWithParentLifetime(cmd)
+	if err != nil {
 		return fmt.Errorf("starting rpc-server: %w", err)
 	}
 
 	m.cmd = cmd
 	m.params = params
+	m.stopping = false
 	m.crashed = false
 	m.lastExitErr = nil
 	m.exitWatchCh = make(chan struct{})
@@ -131,26 +142,35 @@ func (m *Manager) Start(params StartParams) error {
 	// of Start being an async "launch and return" call. Running Wait in
 	// its own goroutine lets Start return immediately while still
 	// reaping the process and noticing an unexpected exit.
-	go m.watchForExit(cmd)
+	go m.watchForExit(cmd, releaseLifetime)
 
 	return nil
 }
 
 // watchForExit blocks until cmd exits, then records whether that exit
-// was expected (via Stop, which is signaled by cmd being cleared under
-// the lock before this goroutine's Wait returns) or unexpected (a real
-// crash). Runs in its own goroutine, started by Start.
-func (m *Manager) watchForExit(cmd *exec.Cmd) {
+// was expected (via Stop, which sets stopping before terminating the
+// process) or unexpected (a real crash). Runs in its own goroutine,
+// started by Start.
+func (m *Manager) watchForExit(cmd *exec.Cmd, releaseLifetime func()) {
 	err := cmd.Wait() // blocks until the process exits, however it exits
+	releaseLifetime()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// If m.cmd no longer points at this exact cmd, Stop already cleared
-	// it deliberately — this exit was expected, nothing to flag.
+	// Stop marks the process as stopping before terminating it. That state is
+	// deliberately separate from a crash so the kill result used for an
+	// intentional shutdown is never exposed as LastExitError.
 	if m.cmd == cmd {
-		m.crashed = true
-		if err != nil {
+		if m.stopping {
+			m.cmd = nil
+			m.stopping = false
+			m.crashed = false
+			m.lastExitErr = nil
+		} else {
+			m.crashed = true
+		}
+		if m.crashed && err != nil {
 			// err is expected and non-nil for almost any exit that wasn't
 			// a clean status-0 return; logged at the call site via
 			// Status()/LastError() rather than here, since this package
@@ -174,11 +194,10 @@ func (m *Manager) Stop(ctx context.Context) error {
 	}
 	cmd := m.cmd
 	waitCh := m.exitWatchCh
+	m.stopping = true
 	m.mu.Unlock()
 
-	if err := cmd.Process.Kill(); err != nil {
-		return fmt.Errorf("stopping rpc-server (pid %d): %w", cmd.Process.Pid, err)
-	}
+	killErr := executil.KillProcessTree(cmd)
 
 	// Wait for watchForExit's own cmd.Wait() to actually complete, rather
 	// than returning as soon as Kill() is sent — Kill() only requests
@@ -186,13 +205,17 @@ func (m *Manager) Stop(ctx context.Context) error {
 	select {
 	case <-waitCh:
 	case <-ctx.Done():
-		return fmt.Errorf("stop requested but process did not exit before context deadline: %w", ctx.Err())
+		// Prefer a completed exit if it raced with context cancellation.
+		select {
+		case <-waitCh:
+			break
+		default:
+			if killErr != nil {
+				return fmt.Errorf("stopping rpc-server (pid %d) failed (%v) and the process did not exit before context deadline: %w", cmd.Process.Pid, killErr, ctx.Err())
+			}
+			return fmt.Errorf("stop requested but process did not exit before context deadline: %w", ctx.Err())
+		}
 	}
-
-	m.mu.Lock()
-	m.cmd = nil
-	m.crashed = false
-	m.mu.Unlock()
 
 	return nil
 }
@@ -205,6 +228,9 @@ func (m *Manager) Status() Status {
 
 	if m.cmd == nil {
 		return StatusStopped
+	}
+	if m.stopping {
+		return StatusStopping
 	}
 	if m.crashed {
 		return StatusCrashed

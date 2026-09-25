@@ -20,6 +20,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -48,20 +50,63 @@ func TestScanGGUFModels(t *testing.T) {
 }
 
 func TestFetchModelStates(t *testing.T) {
+	authorization := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/model-states" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
+		authorization <- r.Header.Get("Authorization")
 		_, _ = w.Write([]byte(`{"models":[{"model":"one","state":"idle-countdown","nodes":["mathesis"]}]}`))
 	}))
 	defer server.Close()
-	states, err := fetchModelStates(server.URL + "/api/v1/model-states")
+	states, err := fetchModelStates(server.URL+"/api/v1/model-states", "dashboard-secret")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got := <-authorization; got != "Bearer dashboard-secret" {
+		t.Fatalf("Authorization = %q, want Bearer token", got)
 	}
 	state, ok := states["one"]
 	if !ok || state.State != "idle-countdown" || len(state.Nodes) != 1 || state.Nodes[0] != "mathesis" {
 		t.Fatalf("unexpected model states: %#v", states)
+	}
+}
+
+func TestFetchModelStatesRequiresAPIKeyWithoutRequestingEndpoint(t *testing.T) {
+	var requested atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requested.Store(true)
+	}))
+	defer server.Close()
+
+	_, err := fetchModelStates(server.URL, "")
+	if err == nil || !strings.Contains(err.Error(), "TETHER_API_KEY") {
+		t.Fatalf("fetchModelStates error = %v, want missing API key guidance", err)
+	}
+	if requested.Load() {
+		t.Fatal("model-state endpoint was requested without an API key")
+	}
+}
+
+func TestFetchModelStatesCanBeDisabledWithoutAPIKey(t *testing.T) {
+	states, err := fetchModelStates(" ", "")
+	if err != nil {
+		t.Fatalf("fetchModelStates error = %v, want disabled endpoint to be ignored", err)
+	}
+	if states != nil {
+		t.Fatalf("fetchModelStates states = %#v, want nil", states)
+	}
+}
+
+func TestFetchModelStatesReportsEndpointStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	_, err := fetchModelStates(server.URL, "wrong-secret")
+	if err == nil || !strings.Contains(err.Error(), "401 Unauthorized") {
+		t.Fatalf("fetchModelStates error = %v, want endpoint status", err)
 	}
 }
 
