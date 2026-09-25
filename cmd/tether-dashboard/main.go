@@ -23,8 +23,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +41,7 @@ import (
 	"tether/internal/httpserver"
 	"tether/internal/registry"
 	"tether/internal/trust"
+	dashboardassets "tether/web/dashboard"
 )
 
 const orchestratorIdentityName = "orchestrator"
@@ -100,26 +104,90 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8080", "HTTP address for the local dashboard")
 	allowlistPath := flag.String("allowlist", "node_allowlist.yaml", "path to Tether node allowlist")
 	modelsDir := flag.String("models-dir", defaultModelsDir, "directory containing orchestrator GGUF models")
-	staticDir := flag.String("static-dir", "web/dashboard", "directory containing dashboard HTML assets")
+	staticDir := flag.String("static-dir", "", "optional directory of dashboard HTML assets (defaults to embedded assets)")
 	modelStateURL := flag.String("model-state-url", "http://127.0.0.1:11435/api/v1/model-states", "Tether API model-state endpoint; empty disables live model states")
 	apiKey := flag.String("api-key", os.Getenv("TETHER_API_KEY"), "API key for the Tether model-state endpoint (or set TETHER_API_KEY)")
 	flag.Parse()
 
-	if info, err := os.Stat(*staticDir); err != nil || !info.IsDir() {
-		log.Fatalf("dashboard assets at %q are unavailable: %v", *staticDir, err)
+	if err := validateDashboardListen(*listen); err != nil {
+		log.Fatal(err)
 	}
 
 	server := &dashboardServer{allowlistPath: *allowlistPath, modelsDir: *modelsDir, modelStateURL: *modelStateURL, modelStateAPIKey: *apiKey}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/dashboard", server.handleDashboard)
-	mux.Handle("/", http.FileServer(http.Dir(*staticDir)))
+	handler, err := newDashboardHandler(server, *staticDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	httpServer := &http.Server{Addr: *listen, Handler: mux, WriteTimeout: 30 * time.Second}
+	httpServer := &http.Server{Addr: *listen, Handler: handler, WriteTimeout: 30 * time.Second}
 	httpserver.Apply(httpServer)
 	log.Printf("Tether dashboard listening on http://%s", *listen)
 	if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func newDashboardHandler(server *dashboardServer, staticDir string) (http.Handler, error) {
+	var assets fs.FS = dashboardassets.Assets
+	if strings.TrimSpace(staticDir) != "" {
+		info, err := os.Stat(staticDir)
+		if err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("dashboard assets at %q are unavailable: %v", staticDir, err)
+		}
+		assets = os.DirFS(staticDir)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/dashboard", server.handleDashboard)
+	mux.Handle("/", http.FileServer(http.FS(assets)))
+	return dashboardRequestPolicy(mux), nil
+}
+
+func validateDashboardListen(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid dashboard listen address %q: %w", address, err)
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("dashboard listen address %q is not loopback; use localhost, 127.0.0.1, or ::1", address)
+	}
+	return nil
+}
+
+func dashboardRequestPolicy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !validDashboardHost(r.Host) || !validDashboardOrigin(r) {
+			http.Error(w, "forbidden request origin", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func validDashboardHost(hostport string) bool {
+	host := hostport
+	if parsed, _, err := net.SplitHostPort(hostport); err == nil {
+		host = parsed
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func validDashboardOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Host != "" && strings.EqualFold(parsed.Host, r.Host) && (parsed.Scheme == "http" || parsed.Scheme == "https")
 }
 
 func (s *dashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -130,7 +198,8 @@ func (s *dashboardServer) handleDashboard(w http.ResponseWriter, r *http.Request
 
 	data, err := s.collect()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("collecting dashboard data: %v", err)
+		http.Error(w, "dashboard collection failed", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

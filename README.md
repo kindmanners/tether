@@ -32,8 +32,8 @@ go build -o bin/tether-api ./cmd/tether-api
 go build -o bin/tether-dashboard ./cmd/tether-dashboard
 ```
 
-On Windows, use the release script to build `tether`, `tether-agent`, and
-`tether-api` with the WebView2 bootstrapper:
+On Windows, use the release script to build all four binaries. The two desktop
+applications include the WebView2 bootstrapper:
 
 ```powershell
 .\scripts\build-windows-release.ps1
@@ -112,6 +112,14 @@ For environments where setting an environment variable is inconvenient,
 `tether-dashboard --api-key <key>` provides the equivalent authenticated
 request. Node and model inventory remain available when the gateway is down;
 the dashboard displays the model-state connection or authentication error.
+
+The dashboard embeds its browser assets and can be run from any working
+directory. It deliberately accepts only loopback listen addresses and rejects
+non-local Host/Origin values because its inventory endpoint contains cluster
+topology and hardware details. Use the default `127.0.0.1:8080`; remote access
+should be provided through a separately authenticated local proxy. The
+`--static-dir` option is only an explicit development override for the embedded
+assets.
 
 ## Documentation
 

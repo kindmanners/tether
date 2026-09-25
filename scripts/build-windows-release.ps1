@@ -57,9 +57,12 @@ try {
     # runtime tag. Keep its console output available for operator diagnostics.
     & go build -o (Join-Path $OutputDirectory 'tether-api.exe') ./cmd/tether-api
     if ($LASTEXITCODE -ne 0) { throw 'Building tether-api.exe failed.' }
+
+    & go build -o (Join-Path $OutputDirectory 'tether-dashboard.exe') ./cmd/tether-dashboard
+    if ($LASTEXITCODE -ne 0) { throw 'Building tether-dashboard.exe failed.' }
 } finally {
     Pop-Location
 }
 
 Write-Host "Windows release files written to $OutputDirectory" -ForegroundColor Green
-Write-Host 'Send tether-agent.exe to a GPU-node friend. Keep tether.exe and tether-api.exe together on the Orchestrator.' -ForegroundColor Cyan
+Write-Host 'Send tether-agent.exe to a GPU-node friend. Keep tether.exe, tether-api.exe, and tether-dashboard.exe together on the Orchestrator.' -ForegroundColor Cyan

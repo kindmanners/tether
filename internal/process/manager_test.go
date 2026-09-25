@@ -68,6 +68,50 @@ func TestIntentionalStopDoesNotRecordCrashError(t *testing.T) {
 	}
 }
 
+func TestFreshManagerIsStoppedAndIdleStopIsNoOp(t *testing.T) {
+	manager := NewManager()
+	if got := manager.Status(); got != StatusStopped {
+		t.Fatalf("Status() = %s, want Stopped", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Stop(ctx); err != nil {
+		t.Fatalf("Stop() on idle manager = %v", err)
+	}
+}
+
+func TestDoubleStartRejectedAndRestartAfterCrashAllowed(t *testing.T) {
+	manager := NewManager()
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testSleepHost, Port: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testSleepHost, Port: 30}); err == nil {
+		t.Fatal("second Start() succeeded while process was running")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := manager.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testCrashHost, Port: 1}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for manager.Status() == StatusRunning && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := manager.Status(); got != StatusCrashed {
+		t.Fatalf("Status() = %s after crash", got)
+	}
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testSleepHost, Port: 30}); err != nil {
+		t.Fatalf("Start() after crash = %v", err)
+	}
+	if err := manager.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUnexpectedExitRecordsCrashError(t *testing.T) {
 	manager := NewManager()
 	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testCrashHost, Port: 1}); err != nil {

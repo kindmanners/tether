@@ -16,10 +16,36 @@
 package certs
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"testing"
 )
+
+func TestLoadOrCreatePersistsIdentityAndRejectsInvalidNames(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("APPDATA", configHome)
+	first, err := LoadOrCreate("test-identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := LoadOrCreate("test-identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.CertDER, second.CertDER) {
+		t.Fatal("LoadOrCreate generated a different identity on reload")
+	}
+	if first.Certificate.Subject.CommonName != "test-identity" || first.TLSCertificate().Leaf.Subject.CommonName != "test-identity" {
+		t.Fatalf("unexpected certificate identity: %#v", first.Certificate.Subject)
+	}
+	for _, name := range []string{"", ".", "..", "../evil", `sub\\dir`} {
+		if _, err := LoadOrCreate(name); err == nil {
+			t.Errorf("LoadOrCreate(%q) succeeded", name)
+		}
+	}
+}
 
 func TestDeleteRemovesIdentityPair(t *testing.T) {
 	configHome := t.TempDir()

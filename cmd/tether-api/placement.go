@@ -16,12 +16,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"tether/internal/agent"
 	"tether/internal/certs"
@@ -29,6 +32,11 @@ import (
 	"tether/internal/placement"
 	"tether/internal/registry"
 	"tether/internal/trust"
+)
+
+const (
+	placementProbeTimeout     = 12 * time.Second
+	placementProbeConcurrency = 4
 )
 
 // planFor obtains a fresh Agent capability response immediately before a new
@@ -82,36 +90,82 @@ func discoverPlacementNodes(allowlistPath string, localGPU bool) ([]placement.No
 	self, selfErr := registry.SelfHostname()
 	regNodes := registry.Build(allowlist, peers).Online()
 	sort.Slice(regNodes, func(i, j int) bool { return regNodes[i].Hostname < regNodes[j].Hostname })
-	result := make([]placement.Node, 0, len(regNodes))
-	for _, node := range regNodes {
+	ctx, cancel := context.WithTimeout(context.Background(), placementProbeTimeout)
+	defer cancel()
+	return probePlacementNodes(ctx, regNodes, placementProbeConcurrency, func(ctx context.Context, node *registry.Node) (placement.Node, bool) {
 		if selfErr == nil && node.Hostname == self {
 			if !localGPU {
-				continue
+				return placement.Node{}, false
 			}
-			gpus, err := localPlacementGPUs()
+			gpus, err := localPlacementGPUsContext(ctx)
 			if err != nil {
-				continue
+				return placement.Node{}, false
 			}
-			result = append(result, placement.Node{Hostname: node.Hostname, Local: true, GPUFreeBytes: gpuFreeBytes(gpus)})
-			continue
+			return placement.Node{Hostname: node.Hostname, Local: true, GPUFreeBytes: gpuFreeBytes(gpus)}, true
 		}
 		tlsConfig, err := trust.PinnedTLSConfig(identity.TLSCertificate(), node.Hostname, false)
 		if err != nil {
-			continue
+			return placement.Node{}, false
 		}
 		client := agent.NewClient(tlsConfig)
 		addr := fmt.Sprintf("%s:%d", node.TailscaleIP, node.AgentPort)
-		status, err := client.GetStatus(addr)
+		status, err := client.GetStatusContext(ctx, addr)
 		if err != nil || status.Status != "Running" {
-			continue
+			return placement.Node{}, false
 		}
-		capabilities, err := client.GetCapabilities(addr)
+		capabilities, err := client.GetCapabilitiesContext(ctx, addr)
 		if err != nil {
-			continue
+			return placement.Node{}, false
 		}
-		result = append(result, placement.Node{Hostname: node.Hostname, Endpoint: fmt.Sprintf("%s:%d", node.TailscaleIP, node.RPCPort), GPUFreeBytes: gpuFreeBytes(capabilities.GPUs)})
+		return placement.Node{Hostname: node.Hostname, Endpoint: fmt.Sprintf("%s:%d", node.TailscaleIP, node.RPCPort), GPUFreeBytes: gpuFreeBytes(capabilities.GPUs)}, true
+	}), nil
+}
+
+type placementProbe func(context.Context, *registry.Node) (placement.Node, bool)
+
+func probePlacementNodes(ctx context.Context, nodes []*registry.Node, concurrency int, probe placementProbe) []placement.Node {
+	if concurrency < 1 {
+		concurrency = 1
 	}
-	return result, nil
+	type probeResult struct {
+		node placement.Node
+		ok   bool
+	}
+	results := make([]probeResult, len(nodes))
+	jobs := make(chan int, len(nodes))
+	for i := range nodes {
+		jobs <- i
+	}
+	close(jobs)
+
+	workerCount := min(concurrency, len(nodes))
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					results[index].node, results[index].ok = probe(ctx, nodes[index])
+				}
+			}
+		}()
+	}
+	workers.Wait()
+
+	result := make([]placement.Node, 0, len(nodes))
+	for _, probed := range results {
+		if probed.ok {
+			result = append(result, probed.node)
+		}
+	}
+	return result
 }
 
 func gpuFreeBytes(gpus []agent.GPUCapability) []int64 {
@@ -122,8 +176,8 @@ func gpuFreeBytes(gpus []agent.GPUCapability) []int64 {
 	return values
 }
 
-func localPlacementGPUs() ([]agent.GPUCapability, error) {
-	output, err := exec.Command("nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits").Output()
+func localPlacementGPUsContext(ctx context.Context) ([]agent.GPUCapability, error) {
+	output, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits").Output()
 	if err != nil {
 		return nil, err
 	}

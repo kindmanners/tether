@@ -7,8 +7,13 @@ on:
     branches: ["master"]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout repository
@@ -27,4 +32,46 @@ jobs:
         run: go build ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -cover ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build Windows release artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-windows-release.ps1 -OutputDirectory (Join-Path $env:RUNNER_TEMP 'tether-release')
+
+  quality:
+    name: Format, race, static analysis, and vulnerabilities
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          test -z "$unformatted" || { printf 'Unformatted Go files:\n%s\n' "$unformatted"; exit 1; }
+
+      - name: Race detector
+        run: go test -race ./...
+
+      - name: Install analysis tools
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+
+      - name: Static analysis
+        run: staticcheck -checks=all,-U1000 ./...
+
+      - name: Vulnerability scan
+        run: govulncheck ./...

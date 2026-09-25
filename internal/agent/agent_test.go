@@ -16,15 +16,167 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
+	"tether/internal/certs"
 	agentconfig "tether/internal/config"
+	"tether/internal/process"
+	"tether/internal/trust"
 )
+
+const agentE2EHelperHost = "__agent_e2e_test_sleep__"
+
+func TestMain(m *testing.M) {
+	var host, port string
+	for i := 1; i+1 < len(os.Args); i++ {
+		switch os.Args[i] {
+		case "--host":
+			host = os.Args[i+1]
+		case "--port":
+			port = os.Args[i+1]
+		}
+	}
+	if host == agentE2EHelperHost {
+		seconds, _ := strconv.Atoi(port)
+		time.Sleep(time.Duration(seconds) * time.Second)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func TestAgentClientServerEndToEndOverPinnedMTLS(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("APPDATA", configHome)
+	agentIdentity, err := certs.LoadOrCreate("agent-e2e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestratorIdentity, err := certs.LoadOrCreate("orchestrator-e2e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trust.Pin("agent-e2e", agentIdentity.CertDER); err != nil {
+		t.Fatal(err)
+	}
+	if err := trust.Pin("orchestrator-e2e", orchestratorIdentity.CertDER); err != nil {
+		t.Fatal(err)
+	}
+	agentTLS, err := trust.PinnedTLSConfig(agentIdentity.TLSCertificate(), "orchestrator-e2e", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestratorTLS, err := trust.PinnedTLSConfig(orchestratorIdentity.TLSCertificate(), "agent-e2e", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(fmt.Errorf("locating test executable: %w", err))
+	}
+	manager := process.NewManager()
+	defer func() { _ = manager.StopDefault() }()
+	commandServer := NewServer(&agentconfig.Config{RPCServerPath: executable, RPCListenHost: agentE2EHelperHost}, manager)
+	server := httptest.NewUnstartedServer(commandServer.handler())
+	server.TLS = agentTLS.Clone()
+	server.StartTLS()
+	defer server.Close()
+	client := NewClient(orchestratorTLS)
+	addr := strings.TrimPrefix(server.URL, "https://")
+
+	status, err := client.GetStatus(addr)
+	if err != nil || status.Status != "Stopped" {
+		t.Fatalf("initial GetStatus() = %#v, %v", status, err)
+	}
+	status, err = client.StartRPCServer(addr, 30)
+	if err != nil || status.Status != "Running" {
+		t.Fatalf("StartRPCServer() = %#v, %v", status, err)
+	}
+	status, err = client.StopRPCServer(addr)
+	if err != nil || status.Status != "Stopped" {
+		t.Fatalf("StopRPCServer() = %#v, %v", status, err)
+	}
+}
+
+func TestClientStatusCapabilitiesAndErrors(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status":
+			_, _ = w.Write([]byte(`{"status":"Running","last_error":""}`))
+		case "/capabilities":
+			_, _ = w.Write([]byte(`{"hostname":"node","gpus":[{"name":"GPU","vramFreeBytes":1024}]}`))
+		case "/stop":
+			writeError(w, http.StatusConflict, "cannot stop")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client := &Client{httpClient: server.Client()}
+	addr := strings.TrimPrefix(server.URL, "https://")
+	status, err := client.GetStatus(addr)
+	if err != nil || status.Status != "Running" {
+		t.Fatalf("GetStatus() = %#v, %v", status, err)
+	}
+	capabilities, err := client.GetCapabilities(addr)
+	if err != nil || len(capabilities.GPUs) != 1 || capabilities.GPUs[0].VRAMFreeBytes != 1024 {
+		t.Fatalf("GetCapabilities() = %#v, %v", capabilities, err)
+	}
+	if _, err := client.StopRPCServer(addr); err == nil || !strings.Contains(err.Error(), "cannot stop") {
+		t.Fatalf("StopRPCServer() error = %v", err)
+	}
+}
+
+func TestClientContextCancelsAgentRequest(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	client := &Client{httpClient: server.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err := client.GetStatusContext(ctx, strings.TrimPrefix(server.URL, "https://"))
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("GetStatusContext() error = %v", err)
+	}
+}
+
+func TestCommandHandlersRejectInvalidMethodsAndPorts(t *testing.T) {
+	server := NewServer(&agentconfig.Config{}, process.NewManager())
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		method  string
+		body    string
+		want    int
+	}{
+		{name: "start method", handler: server.handleStart, method: http.MethodGet, want: http.StatusMethodNotAllowed},
+		{name: "start malformed", handler: server.handleStart, method: http.MethodPost, body: "{", want: http.StatusBadRequest},
+		{name: "start port", handler: server.handleStart, method: http.MethodPost, body: `{"port":0}`, want: http.StatusBadRequest},
+		{name: "stop method", handler: server.handleStop, method: http.MethodGet, want: http.StatusMethodNotAllowed},
+		{name: "status method", handler: server.handleStatus, method: http.MethodPost, want: http.StatusMethodNotAllowed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, "/", strings.NewReader(test.body))
+			recorder := httptest.NewRecorder()
+			test.handler(recorder, request)
+			if recorder.Code != test.want {
+				t.Fatalf("status = %d, want %d: %s", recorder.Code, test.want, recorder.Body.String())
+			}
+		})
+	}
+}
 
 func TestHandleCapabilitiesServesBootstrapReport(t *testing.T) {
 	configHome := t.TempDir()

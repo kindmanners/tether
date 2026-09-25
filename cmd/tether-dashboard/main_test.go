@@ -16,6 +16,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,83 @@ import (
 	"sync/atomic"
 	"testing"
 )
+
+func TestEmbeddedDashboardAssetsAreServed(t *testing.T) {
+	handler, err := newDashboardHandler(&dashboardServer{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/", "/app.js", "/styles.css"} {
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080"+path, nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", path, recorder.Code)
+		}
+		if recorder.Body.Len() == 0 {
+			t.Errorf("GET %s returned an empty body", path)
+		}
+	}
+}
+
+func TestValidateDashboardListenRequiresLoopback(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080"} {
+		if err := validateDashboardListen(address); err != nil {
+			t.Errorf("validateDashboardListen(%q) = %v", address, err)
+		}
+	}
+	for _, address := range []string{"0.0.0.0:8080", "[::]:8080", ":8080", "192.0.2.10:8080", "bad-address"} {
+		if err := validateDashboardListen(address); err == nil {
+			t.Errorf("validateDashboardListen(%q) succeeded, want rejection", address)
+		}
+	}
+}
+
+func TestDashboardRequestPolicyRejectsNonLoopbackHostAndCrossOrigin(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	handler := dashboardRequestPolicy(next)
+	tests := []struct {
+		name   string
+		host   string
+		origin string
+		want   int
+	}{
+		{name: "loopback", host: "127.0.0.1:8080", want: http.StatusNoContent},
+		{name: "matching origin", host: "localhost:8080", origin: "http://localhost:8080", want: http.StatusNoContent},
+		{name: "remote host", host: "cluster.example:8080", want: http.StatusForbidden},
+		{name: "cross origin", host: "localhost:8080", origin: "https://attacker.example", want: http.StatusForbidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://"+test.host+"/", nil)
+			request.Host = test.host
+			request.Header.Set("Origin", test.origin)
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != test.want {
+				t.Fatalf("status = %d, want %d", recorder.Code, test.want)
+			}
+		})
+	}
+}
+
+func TestDashboardCollectionErrorDoesNotExposeInternalPath(t *testing.T) {
+	sentinel := filepath.Join(t.TempDir(), "sensitive-allowlist-name.yaml")
+	server := &dashboardServer{allowlistPath: sentinel}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/dashboard", nil)
+	recorder := httptest.NewRecorder()
+	server.handleDashboard(recorder, request)
+	body, err := io.ReadAll(recorder.Result().Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if strings.Contains(string(body), sentinel) {
+		t.Fatalf("response exposed internal path %q: %s", sentinel, body)
+	}
+}
 
 func TestScanGGUFModels(t *testing.T) {
 	dir := t.TempDir()

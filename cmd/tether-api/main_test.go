@@ -29,12 +29,65 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"tether/internal/gguf"
 	"tether/internal/placement"
+	"tether/internal/registry"
 )
+
+func TestProbePlacementNodesIsBoundedConcurrentAndDeterministic(t *testing.T) {
+	nodes := []*registry.Node{
+		{Hostname: "alpha"}, {Hostname: "bravo"}, {Hostname: "charlie"}, {Hostname: "delta"},
+	}
+	var active atomic.Int32
+	var maximum atomic.Int32
+	result := probePlacementNodes(context.Background(), nodes, 2, func(_ context.Context, node *registry.Node) (placement.Node, bool) {
+		current := active.Add(1)
+		for current > maximum.Load() && !maximum.CompareAndSwap(maximum.Load(), current) {
+		}
+		defer active.Add(-1)
+		if node.Hostname == "alpha" {
+			time.Sleep(40 * time.Millisecond)
+		} else {
+			time.Sleep(5 * time.Millisecond)
+		}
+		return placement.Node{Hostname: node.Hostname}, true
+	})
+	if maximum.Load() < 2 || maximum.Load() > 2 {
+		t.Fatalf("maximum concurrent probes = %d, want 2", maximum.Load())
+	}
+	if len(result) != len(nodes) {
+		t.Fatalf("got %d results, want %d", len(result), len(nodes))
+	}
+	for i := range nodes {
+		if result[i].Hostname != nodes[i].Hostname {
+			t.Fatalf("result order = %#v, want input order", result)
+		}
+	}
+}
+
+func TestProbePlacementNodesUsesOneOverallDeadline(t *testing.T) {
+	nodes := make([]*registry.Node, 12)
+	for i := range nodes {
+		nodes[i] = &registry.Node{Hostname: fmt.Sprintf("node-%02d", i)}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	result := probePlacementNodes(ctx, nodes, 3, func(ctx context.Context, _ *registry.Node) (placement.Node, bool) {
+		<-ctx.Done()
+		return placement.Node{}, false
+	})
+	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
+		t.Fatalf("probing took %v; deadline appears to be applied per node", elapsed)
+	}
+	if len(result) != 0 {
+		t.Fatalf("got %d successful results after deadline", len(result))
+	}
+}
 
 func TestResolveRPCEndpointsManual(t *testing.T) {
 	endpoints, err := resolveRPCEndpoints("100.64.0.1:50053, [fd7a:115c:a1e0::1]:50053", "unused")

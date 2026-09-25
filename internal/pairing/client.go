@@ -42,11 +42,12 @@ type PairResult struct {
 // Client performs the Orchestrator side of the first-contact handshake.
 type Client struct {
 	orchestratorIdentity *certs.Identity
+	selfHostname         func() (string, error)
 }
 
 // NewClient creates a pairing Client that presents orchestratorIdentity.
 func NewClient(orchestratorIdentity *certs.Identity) *Client {
-	return &Client{orchestratorIdentity: orchestratorIdentity}
+	return &Client{orchestratorIdentity: orchestratorIdentity, selfHostname: registry.SelfHostname}
 }
 
 func unverifiedHTTPClient() *http.Client {
@@ -112,7 +113,7 @@ func (c *Client) fetchAgentInfo(addr, code string) (*x509.Certificate, error) {
 // sends a proof binding that Agent certificate, the Orchestrator certificate,
 // and the recorded Tailnet hostname. The code itself is never transmitted.
 func (c *Client) Pair(addr, code string) (*PairResult, error) {
-	orchestratorHostname, err := registry.SelfHostname()
+	orchestratorHostname, err := c.selfHostname()
 	if err != nil {
 		return nil, fmt.Errorf("determining Orchestrator Tailnet hostname: %w", err)
 	}

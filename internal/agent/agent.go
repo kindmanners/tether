@@ -120,15 +120,9 @@ func NewServer(cfg *agentconfig.Config, manager *process.Manager) *Server {
 // (cmd/tether-agent), using internal/trust and internal/certs directly,
 // exactly the way cmd/tether-agent already builds a pairing.Server.
 func (s *Server) Start(ctx context.Context, addr string, tlsConfig *tls.Config) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/start", s.handleStart)
-	mux.HandleFunc("/stop", s.handleStop)
-	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/capabilities", s.handleCapabilities)
-
 	httpServer := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      s.handler(),
 		TLSConfig:    tlsConfig,
 		WriteTimeout: 30 * time.Second,
 	}
@@ -151,6 +145,15 @@ func (s *Server) Start(ctx context.Context, addr string, tlsConfig *tls.Config) 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	return httpServer.Shutdown(shutdownCtx)
+}
+
+func (s *Server) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/start", s.handleStart)
+	mux.HandleFunc("/stop", s.handleStop)
+	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/capabilities", s.handleCapabilities)
+	return mux
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {

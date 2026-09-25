@@ -14,6 +14,11 @@ With `--rpc auto`, the gateway:
 5. Falls back to a set of RPC nodes only when no single GPU has enough
    capacity.
 
+Agent status and capability probes run concurrently with a single 12-second
+placement deadline and a maximum of four in-flight probes. An unresponsive
+node is omitted from that placement decision instead of delaying every later
+candidate by its individual client timeout.
+
 The default runtime reserve is the GGUF file size multiplied by `1.15`.
 The default KV-cache reserve is 256 KiB per context token. Tune those
 conservatively with `--model-overhead` and `--kv-cache-bytes-per-token` when

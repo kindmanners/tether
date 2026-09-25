@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-package registry
 // Package registry maintains Tether's view of which machines on the tailnet
 // are usable inference nodes, merging live Tailscale peer data with a
 // hand-maintained allowlist (see node_allowlist.yaml).
+package registry
 
 import "time"
 
@@ -66,10 +66,10 @@ func (s NodeStatus) String() string {
 // Node struct doesn't need a breaking change later when scheduling logic
 // needs it (design doc §4.3).
 type NodeCapabilities struct {
-	CPUModel string
+	CPUModel  string
 	GPUModel  string
 	VRAMTotal int64
-	RAMTotal int64
+	RAMTotal  int64
 }
 
 // Node represents a single machine the registry knows about. A Node only
