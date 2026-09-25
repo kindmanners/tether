@@ -20,7 +20,7 @@ Tether is a Go project. The required Go toolchain is defined in
 then fork and clone the repository:
 
 ```bash
-git clone https://github.com/<your-account>/tether.git
+git clone https://github.com/kindmanners/tether.git
 cd tether
 git checkout -b fix/short-description
 go mod download
