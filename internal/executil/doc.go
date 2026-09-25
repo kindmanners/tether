@@ -9,4 +9,4 @@
 // termination helpers shared by Tether's managed subprocesses.
 package executil
 
-//Does nothing but don't remove :P 
+// Does nothing but don't remove :P 
