@@ -16,14 +16,18 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -33,8 +37,6 @@ import (
 	"tether/internal/process"
 	"tether/internal/trust"
 )
-
-const agentE2EHelperHost = "__agent_e2e_test_sleep__"
 
 func TestMain(m *testing.M) {
 	var host, port string
@@ -46,9 +48,8 @@ func TestMain(m *testing.M) {
 			port = os.Args[i+1]
 		}
 	}
-	if host == agentE2EHelperHost {
-		seconds, _ := strconv.Atoi(port)
-		time.Sleep(time.Duration(seconds) * time.Second)
+	if host == "127.0.0.1" && port != "" {
+		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -86,7 +87,7 @@ func TestAgentClientServerEndToEndOverPinnedMTLS(t *testing.T) {
 	}
 	manager := process.NewManager()
 	defer func() { _ = manager.StopDefault() }()
-	commandServer := NewServer(&agentconfig.Config{RPCServerPath: executable, RPCListenHost: agentE2EHelperHost}, manager)
+	commandServer := NewServer(&agentconfig.Config{RPCServerPath: executable, RPCListenHost: "127.0.0.1"}, manager)
 	server := httptest.NewUnstartedServer(commandServer.handler())
 	server.TLS = agentTLS.Clone()
 	server.StartTLS()
@@ -105,6 +106,244 @@ func TestAgentClientServerEndToEndOverPinnedMTLS(t *testing.T) {
 	status, err = client.StopRPCServer(addr)
 	if err != nil || status.Status != "Stopped" {
 		t.Fatalf("StopRPCServer() = %#v, %v", status, err)
+	}
+}
+
+func TestRPCTunnelForwardsOverPinnedMTLS(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("APPDATA", configHome)
+	agentIdentity, err := certs.LoadOrCreate("agent-rpc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestratorIdentity, err := certs.LoadOrCreate("orchestrator-rpc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trust.Pin("agent-rpc", agentIdentity.CertDER); err != nil {
+		t.Fatal(err)
+	}
+	if err := trust.Pin("orchestrator-rpc", orchestratorIdentity.CertDER); err != nil {
+		t.Fatal(err)
+	}
+	agentTLS, err := trust.PinnedTLSConfig(agentIdentity.TLSCertificate(), "orchestrator-rpc", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestratorTLS, err := trust.PinnedTLSConfig(orchestratorIdentity.TLSCertificate(), "agent-rpc", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Close()
+	go func() {
+		for {
+			conn, acceptErr := backend.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() { _, _ = io.Copy(conn, conn); _ = conn.Close() }()
+		}
+	}()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := process.NewManager()
+	defer func() { _ = manager.StopDefault() }()
+	commandServer := NewServer(&agentconfig.Config{RPCServerPath: executable, RPCListenHost: "127.0.0.1"}, manager)
+	server := httptest.NewUnstartedServer(commandServer.handler())
+	server.TLS = agentTLS.Clone()
+	server.TLS.NextProtos = []string{"http/1.1"}
+	server.StartTLS()
+	defer server.Close()
+	client := NewClient(orchestratorTLS)
+	addr := strings.TrimPrefix(server.URL, "https://")
+	port := backend.Addr().(*net.TCPAddr).Port
+	if _, err := client.StartRPCServer(addr, port); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := client.DialRPC(context.Background(), addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Write([]byte("secure-rpc")); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len("secure-rpc"))
+	if _, err := io.ReadFull(stream, got); err != nil || string(got) != "secure-rpc" {
+		t.Fatalf("forwarded bytes = %q, %v", got, err)
+	}
+	if _, err := client.StopRPCServer(addr); err != nil {
+		t.Fatal(err)
+	}
+	_ = stream.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if _, err := stream.Read(make([]byte, 1)); err == nil {
+		t.Fatal("RPC stream remained open after managed process stopped")
+	}
+}
+
+func TestRPCStreamLimitsAreReleased(t *testing.T) {
+	server := NewServer(&agentconfig.Config{}, process.NewManager())
+	var peer [32]byte
+	for range maxRPCStreamsPerPeer {
+		if !server.reserveStream(peer) {
+			t.Fatal("stream rejected before per-peer limit")
+		}
+	}
+	if server.reserveStream(peer) {
+		t.Fatal("stream accepted beyond per-peer limit")
+	}
+	server.releaseReservation(peer)
+	if !server.reserveStream(peer) {
+		t.Fatal("released stream capacity was not reusable")
+	}
+
+	totalServer := NewServer(&agentconfig.Config{}, process.NewManager())
+	for i := range maxRPCStreamsTotal {
+		var distinctPeer [32]byte
+		distinctPeer[0] = byte(i)
+		if !totalServer.reserveStream(distinctPeer) {
+			t.Fatalf("stream %d rejected before total limit", i)
+		}
+	}
+	var additionalPeer [32]byte
+	additionalPeer[0] = byte(maxRPCStreamsTotal)
+	if totalServer.reserveStream(additionalPeer) {
+		t.Fatal("stream accepted beyond total Agent limit")
+	}
+}
+
+func TestRPCReservationDuringShutdownIsReleasedOnce(t *testing.T) {
+	server := NewServer(&agentconfig.Config{}, process.NewManager())
+	var peer [32]byte
+	if !server.reserveStream(peer) {
+		t.Fatal("initial stream reservation was rejected")
+	}
+
+	server.beginShutdown()
+	if server.registerStream(&rpcStream{peer: peer}) {
+		t.Fatal("stream registered after shutdown began")
+	}
+	server.releaseReservation(peer)
+
+	server.streamMu.Lock()
+	defer server.streamMu.Unlock()
+	if server.totalStreams != 0 || len(server.peerStreams) != 0 {
+		t.Fatalf("stream counters after shutdown race = total %d, peers %v", server.totalStreams, server.peerStreams)
+	}
+}
+
+func TestRPCConnectRejectsCallerControlledDestinations(t *testing.T) {
+	server := NewServer(&agentconfig.Config{}, process.NewManager())
+	tests := []struct {
+		name    string
+		target  string
+		body    io.Reader
+		header  http.Header
+		chunked bool
+	}{
+		{name: "authority form", target: "http://127.0.0.1:9"},
+		{name: "query", target: "/rpc?port=9"},
+		{name: "body", target: "/rpc", body: bytes.NewBufferString("127.0.0.1:9")},
+		{name: "chunked body", target: "/rpc", body: bytes.NewBufferString("127.0.0.1:9"), chunked: true},
+		{name: "target header", target: "/rpc", header: http.Header{"X-Tether-Rpc-Target": []string{"127.0.0.1:9"}}},
+		{name: "destination header", target: "/rpc", header: http.Header{"X-Tether-Rpc-Destination": []string{"127.0.0.1:9"}}},
+		{name: "port header", target: "/rpc", header: http.Header{"X-Tether-Rpc-Port": []string{"9"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodConnect, test.target, test.body)
+			if test.chunked {
+				request.ContentLength = -1
+				request.TransferEncoding = []string{"chunked"}
+			}
+			request.Header = test.header
+			request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Raw: []byte("paired-peer")}}}
+			recorder := httptest.NewRecorder()
+			server.handleRPC(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("CONNECT injection returned %d, want %d", recorder.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
+func TestAgentRPCServerRefusesHTTP2OnlyALPN(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("APPDATA", configHome)
+	agentIdentity, err := certs.LoadOrCreate("agent-http1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	orchestratorIdentity, err := certs.LoadOrCreate("orchestrator-http1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trust.Pin("agent-http1", agentIdentity.CertDER); err != nil {
+		t.Fatal(err)
+	}
+	if err := trust.Pin("orchestrator-http1", orchestratorIdentity.CertDER); err != nil {
+		t.Fatal(err)
+	}
+	agentTLS, err := trust.PinnedTLSConfig(agentIdentity.TLSCertificate(), "orchestrator-http1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTLS, err := trust.PinnedTLSConfig(orchestratorIdentity.TLSCertificate(), "agent-http1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTLS.NextProtos = []string{"h2"}
+
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	serverDone := make(chan error, 1)
+	go func() {
+		serverDone <- NewServer(&agentconfig.Config{}, process.NewManager()).Start(ctx, addr, agentTLS)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		connection, dialErr := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if dialErr == nil {
+			_ = connection.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("Agent server did not start: %v", dialErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	connection, err := tls.DialWithDialer(&net.Dialer{Timeout: time.Second}, "tcp", addr, clientTLS)
+	if connection != nil {
+		_ = connection.Close()
+	}
+	if err == nil {
+		cancel()
+		t.Fatal("Agent negotiated an HTTP/2-only RPC connection")
+	}
+	cancel()
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatalf("Agent shutdown returned %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Agent server did not shut down")
 	}
 }
 
