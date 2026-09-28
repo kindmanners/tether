@@ -5,8 +5,8 @@ Tether has two intentionally separate configuration surfaces:
 - `node_allowlist.yaml` is an Orchestrator-side, human-maintained list of
   Tailnet nodes Tether is allowed to discover and contact.
 - `agent_config.yaml` is local state on each GPU node. It tells that Agent
-  which `ggml-rpc-server` executable it may start and which local address it
-  may bind. The Orchestrator cannot set either value remotely.
+  which `ggml-rpc-server` executable it may start. Its bind address is fixed
+  to IPv4 loopback and cannot be changed by the Orchestrator.
 
 ## Node allowlist
 
@@ -27,9 +27,9 @@ valid `agent_port` and `rpc_port` values. The hostname must match the name
 reported by Tailscale. Discovery only considers a machine when it is both
 online in the Tailnet and present in this allowlist.
 
-`agent_port` is the Tether Agent's mTLS control port. `rpc_port` is the port
-the local llama.cpp RPC server will use. Do not expose either port publicly;
-allow only the required Tailnet traffic.
+`agent_port` is the Tether Agent's certificate-pinned mTLS control and tunnel
+port. `rpc_port` is used only by the local `127.0.0.1` llama.cpp process. Never
+expose the RPC port to the Tailnet, LAN, or internet.
 
 ## Registry data model
 
@@ -66,13 +66,14 @@ The Agent reads its local file from the platform user configuration directory:
 
 ```yaml
 rpc_server_path: C:\llama.cpp\build-rpc-cuda\bin\Release\ggml-rpc-server.exe
-rpc_listen_host: 100.x.y.z
+rpc_listen_host: 127.0.0.1
 ```
 
 On Linux, `rpc_server_path` can instead be a path such as
-`/opt/llama.cpp/build-rpc/bin/ggml-rpc-server`. `rpc_listen_host` should be the
-node's Tailscale IPv4 address. The path must exist and be a file before the
-Agent will accept the configuration.
+`/opt/llama.cpp/build-rpc/bin/ggml-rpc-server`. `rpc_listen_host` is retained
+as a migration field but must be exactly `127.0.0.1`. The process launcher
+also hard-codes loopback, so configuration cannot widen the bind address. The
+path must exist and be a file before the Agent accepts the configuration.
 
 Changing the Agent configuration is a local operator action. Pairing only
 establishes identity and trust; it does not give the Orchestrator authority to
@@ -80,10 +81,11 @@ choose an executable or bind address.
 
 ## Network policy
 
-`ggml-rpc-server` does not provide Tether mTLS or application-layer
-authentication. Bind it to the node's Tailscale address and allow only the
-specific Orchestrator to reach both TCP 7420 and the node's configured RPC
-port. Do not rely on an allow rule for the entire Tailnet.
+`ggml-rpc-server` has no authentication and remains bound to `127.0.0.1`.
+Remote RPC is transported only through the Agent's HTTP/1.1 CONNECT endpoint,
+which uses the exact certificates established during pairing. Allow only the
+specific Orchestrator to reach Agent TCP 7420. Certificate rotation fails
+closed until the node is explicitly re-paired.
 
 For example, assign role tags to the two machine types and add a Tailscale
 grant for the exact ports (replace `50053` with the Agent's `rpc_port`):
@@ -98,12 +100,16 @@ grant for the exact ports (replace `50053` with the Agent's `rpc_port`):
     {
       "src": ["tag:tether-orchestrator"],
       "dst": ["tag:tether-agent"],
-      "ip": ["tcp:7420", "tcp:50053"]
+      "ip": ["tcp:7420"]
     }
   ]
 }
 ```
 
 Use equivalent selectors for named devices or groups if tags do not fit your
-Tailnet. Keep any Windows or Linux host-firewall rule aligned with this policy;
-the bootstrap's Tailnet-range firewall rule is not a substitute for it.
+Tailnet. Keep the host firewall aligned with this policy. Do not add an inbound
+rule for `rpc_port`; Tether's Windows setup removes its obsolete RPC rule.
+
+Paired nodes are trusted peers: mTLS prevents arbitrary network clients from
+reaching RPC, but it does not sanitize RPC messages, sandbox llama.cpp, or
+protect against malicious authenticated peers or hostile localhost processes.

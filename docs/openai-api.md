@@ -10,7 +10,7 @@ Start it with a llama.cpp `llama-server` that has RPC support:
 
 ```bash
 TETHER_API_KEY="replace-with-a-strong-random-token" \
-  go run ./cmd/tether-api --listen 127.0.0.1:11435 --rpc auto
+  go run ./cmd/tether-api --listen 127.0.0.1:11435 --agents auto
 ```
 
 The default model directory is `~/models`. Choose another directory or server
@@ -21,19 +21,27 @@ tether-api \
   --api-key "replace-with-a-strong-random-token" \
   --models-dir /path/to/gguf-models \
   --llama-server /path/to/llama-server \
-  --rpc auto
+  --agents auto
 ```
 
-## RPC modes
+## Agent selection
 
-- `--rpc auto` (the default) reads the allowlist and queries online, paired
+- `--agents auto` (the default) reads the allowlist and queries online, paired
   Agents for free VRAM when a model is loaded. It prefers one GPU when the
   model fits and uses RPC splitting only when required.
-- `--rpc host:port,host:port` uses the specified RPC endpoints.
-- `--rpc none` runs without remote RPC nodes.
+- `--agents node-alpha,node-beta` requires those exact allowlisted, online,
+  paired Agent hostnames. Unknown, duplicate, offline, or unpaired names fail
+  closed instead of silently falling back.
+- `--agents none` runs without remote Agents.
 
-With `--rpc auto`, select a different allowlist with `--allowlist path/to/node_allowlist.yaml`.
+The deprecated `--rpc` alias accepts the same hostname-only grammar for one
+release. Raw `host:port` values fail with a migration error. With `--agents
+auto`, select a different allowlist with `--allowlist path/to/node_allowlist.yaml`.
 Use `--local-gpu=false` if the Orchestrator must not contribute a local CUDA GPU.
+
+At worker launch Tether creates one ephemeral `127.0.0.1` listener per selected
+Agent. `llama-server --rpc` receives only those loopback endpoints; every
+accepted socket becomes a fresh pinned-mTLS CONNECT stream to that Agent.
 
 ## Client configuration
 

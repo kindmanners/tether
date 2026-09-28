@@ -30,10 +30,10 @@ Configure the Agent in `~/.config/tether/agent_config.yaml` (or under
 
 ```yaml
 rpc_server_path: /opt/llama.cpp/build-rpc-cuda/bin/ggml-rpc-server
-rpc_listen_host: 100.x.y.z
+rpc_listen_host: 127.0.0.1
 ```
 
-Set `rpc_listen_host` to the node's Tailscale IPv4 address.
+The Agent rejects any other bind address.
 
 ## Pair and operate
 
@@ -41,9 +41,9 @@ Set `rpc_listen_host` to the node's Tailscale IPv4 address.
    `node_allowlist.yaml`.
 2. Complete local Agent preflight or setup and start `tether-agent`.
 3. Pair from the Orchestrator with the displayed one-time pairing code.
-4. In the Tailnet policy, allow only the specific Orchestrator to reach TCP
-   7420 and the configured RPC port. Match any host-firewall rule to that
-   policy; a whole-Tailnet allow rule is only a broad backstop. See the
+4. In the Tailnet policy and host firewall, allow only the specific
+   Orchestrator to reach certificate-pinned Agent TCP 7420. Do not open the
+   local RPC port. See the
    [network-policy example](configuration.md#network-policy).
 
-Do not expose either service to the public internet.
+Do not expose the Agent publicly or expose the RPC process to any network.

@@ -5,7 +5,7 @@ made per model load so it can use current Agent health and VRAM reports.
 
 ## Automatic placement
 
-With `--rpc auto`, the gateway:
+With `--agents auto`, the gateway:
 
 1. Finds nodes in `node_allowlist.yaml` that are online and paired.
 2. Obtains their current free-VRAM reports over pinned mTLS.
@@ -13,6 +13,11 @@ With `--rpc auto`, the gateway:
 4. Prefers a whole-model placement on one suitable GPU.
 5. Falls back to a set of RPC nodes only when no single GPU has enough
    capacity.
+
+Placement previews perform only authenticated health and capability probes.
+They create no listeners or tunnels. Ephemeral loopback tunnels are opened
+only when a worker launches and close on launch failure, crash, unload, or
+gateway shutdown.
 
 Agent status and capability probes run concurrently with a single 12-second
 placement deadline and a maximum of four in-flight probes. An unresponsive
