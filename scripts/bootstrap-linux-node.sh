@@ -255,32 +255,27 @@ fi
 check_cancel
 progress firewall 'Reviewing narrow firewall guidance; Tether will not modify firewall rules automatically.'
 if need ufw; then
-  printf 'Firewall guidance (not applied): after configuring a Tailscale grant for the specific Orchestrator, optionally allow its exact Tailscale IP with: sudo ufw allow from <orchestrator-tailscale-ip> to any port %s proto tcp; sudo ufw allow from <orchestrator-tailscale-ip> to any port %s proto tcp\n' "$AGENT_PORT" "$RPC_PORT"
+  printf 'Firewall guidance (not applied): after configuring a Tailscale grant for the specific Orchestrator, optionally allow its exact Tailscale IP with: sudo ufw allow from <orchestrator-tailscale-ip> to any port %s proto tcp\n' "$AGENT_PORT"
 elif need firewall-cmd; then
-  printf 'Firewall guidance (not applied): after configuring a Tailscale grant for the specific Orchestrator, use your active firewalld zone to allow TCP %s and %s only from that Orchestrator address.\n' "$AGENT_PORT" "$RPC_PORT"
+  printf 'Firewall guidance (not applied): after configuring a Tailscale grant for the specific Orchestrator, use your active firewalld zone to allow only mTLS Agent TCP %s from that Orchestrator address.\n' "$AGENT_PORT"
 else
-  printf 'Firewall guidance: configure a Tailscale grant for the specific Orchestrator. If a host firewall is enabled, allow TCP %s and %s only from that Orchestrator address. No firewall changes were made.\n' "$AGENT_PORT" "$RPC_PORT"
+  printf 'Firewall guidance: configure a Tailscale grant for the specific Orchestrator. If a host firewall is enabled, allow only mTLS Agent TCP %s from that Orchestrator address. llama.cpp RPC stays on loopback.\n' "$AGENT_PORT"
 fi
 
 progress configuration 'Writing only the local Agent configuration and observed GPU capability report.'
 mkdir -p "$CONFIG_DIR"
 CONFIG_PATH="$CONFIG_DIR/agent_config.yaml"
-KEEP_EXISTING=0
 if [[ -f "$CONFIG_PATH" && $REPLACE_AGENT_CONFIG -eq 0 ]]; then
   EXISTING_RPC_SERVER="$(sed -n "s|^rpc_server_path:[[:space:]]*['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}[[:space:]]*$|\1|p" "$CONFIG_PATH" | head -n1)"
   if [[ -n "$EXISTING_RPC_SERVER" && -x "$EXISTING_RPC_SERVER" ]]; then
-    KEEP_EXISTING=1
+    RPC_SERVER="$EXISTING_RPC_SERVER"
   else
     printf 'Replacing unusable local Agent configuration at %s.\n' "$CONFIG_PATH"
   fi
 fi
-if (( ! KEEP_EXISTING )); then
-  config_tmp="$(mktemp "$CONFIG_DIR/agent_config.yaml.XXXXXX")"
-  printf "rpc_server_path: '%s'\nrpc_listen_host: '%s'\n" "$RPC_SERVER" "$TAILSCALE_IP" >"$config_tmp"
-  mv "$config_tmp" "$CONFIG_PATH"
-else
-  printf 'Keeping existing local Agent configuration at %s (use --replace-agent-config to replace it).\n' "$CONFIG_PATH"
-fi
+config_tmp="$(mktemp "$CONFIG_DIR/agent_config.yaml.XXXXXX")"
+printf "rpc_server_path: '%s'\nrpc_listen_host: '127.0.0.1'\n" "$RPC_SERVER" >"$config_tmp"
+mv "$config_tmp" "$CONFIG_PATH"
 REPORT_PATH="$(write_report)"
 progress complete 'Local Linux setup completed. Review the firewall guidance in the persistent setup log, then return here to pair this node.'
-printf '\nProvisioning complete.\nRPC endpoint: %s:%s\nCapability report: %s\n' "$TAILSCALE_IP" "$RPC_PORT" "$REPORT_PATH"
+printf '\nProvisioning complete.\nLocal RPC endpoint: 127.0.0.1:%s\nCapability report: %s\n' "$RPC_PORT" "$REPORT_PATH"

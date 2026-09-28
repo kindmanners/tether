@@ -289,6 +289,15 @@ function Ensure-FirewallRule {
     }
 }
 
+function Remove-LegacyRPCFirewallRules {
+    $rules = @(Get-NetFirewallRule -DisplayName 'Tether llama.cpp RPC TCP *' -ErrorAction SilentlyContinue)
+    foreach ($rule in $rules) {
+        if ($PSCmdlet.ShouldProcess($rule.DisplayName, 'remove obsolete inbound llama.cpp RPC rule')) {
+            Remove-NetFirewallRule -Name $rule.Name
+        }
+    }
+}
+
 function Get-TailscaleIPv4 {
     if (-not (Get-CommandPath 'tailscale')) { return $null }
     $addresses = @(& tailscale ip -4 2>$null | Where-Object { $_ -match '^100\.' })
@@ -467,7 +476,7 @@ function Invoke-LlamaCppBuild {
 }
 
 function Write-AgentConfig {
-    param([string]$RPCServerPath, [string]$ListenHost)
+    param([string]$RPCServerPath)
     $configDir = Join-Path $env:APPDATA 'tether'
     $configPath = Join-Path $configDir 'agent_config.yaml'
     if ((Test-Path $configPath) -and -not $ReplaceAgentConfig) {
@@ -475,15 +484,15 @@ function Write-AgentConfig {
         $pathMatch = [regex]::Match($existing, "(?m)^rpc_server_path:\\s*'(?<path>(?:[^']|'')*)'\\s*$")
         $existingRPCServer = if ($pathMatch.Success) { $pathMatch.Groups['path'].Value.Replace("''", "'") } else { $null }
         if ($existingRPCServer -and (Test-Path -LiteralPath $existingRPCServer -PathType Leaf)) {
-            Write-Check "Keeping existing Agent configuration at $configPath" $true
-            return $configPath
+            $RPCServerPath = $existingRPCServer
+            Write-Check "Keeping the existing RPC binary and migrating its bind address to loopback" $true
         }
         Write-Check "Replacing unusable Agent configuration at $configPath" $false
     }
     if ($PSCmdlet.ShouldProcess($configPath, 'write local Tether Agent configuration')) {
         New-Item -ItemType Directory -Force -Path $configDir | Out-Null
         $escapedPath = $RPCServerPath.Replace("'", "''")
-        @("rpc_server_path: '$escapedPath'", "rpc_listen_host: '$ListenHost'") |
+        @("rpc_server_path: '$escapedPath'", "rpc_listen_host: '127.0.0.1'") |
             Set-Content -Path $configPath -Encoding UTF8
     }
     return $configPath
@@ -604,7 +613,7 @@ if (-not $Provision) {
     exit 0
 }
 if ($WhatIfPreference) {
-    Write-Host "`nWhatIf: would build the Agent and CUDA RPC server, add Tailnet-range firewall rules, update the user CUDA runtime PATH, and write the local Agent config/report. Configure a separate least-privilege Tailnet policy for the Orchestrator." -ForegroundColor Cyan
+    Write-Host "`nWhatIf: would build the Agent and CUDA RPC server, expose only the mTLS Agent port to the Tailnet, remove obsolete Tether RPC firewall rules, update the user CUDA runtime PATH, and write the local Agent config/report." -ForegroundColor Cyan
     exit 0
 }
 
@@ -635,10 +644,10 @@ Write-Step 'Building pinned llama.cpp CUDA RPC server' 'rpc-server'
 
 Write-Step 'Creating Tailnet-range firewall rules' 'configuration'
 Ensure-FirewallRule -Name "Tether Agent TCP $AgentPort" -Port $AgentPort
-Ensure-FirewallRule -Name "Tether llama.cpp RPC TCP $RPCPort" -Port $RPCPort
-Write-Warning "These Windows Firewall rules allow the Tailnet range ($TailnetCIDR). Before operating this node, configure Tailscale grants so only the Orchestrator can reach TCP $AgentPort and TCP $RPCPort."
+Remove-LegacyRPCFirewallRules
+Write-Warning "The Agent control rule allows the Tailnet range ($TailnetCIDR). Configure Tailscale grants so only the Orchestrator can reach mTLS TCP $AgentPort; llama.cpp RPC remains on loopback."
 Write-Step 'Writing local Agent configuration' 'configuration'
-$configPath = Write-AgentConfig -RPCServerPath $rpcServer -ListenHost $tailscaleIP
+$configPath = Write-AgentConfig -RPCServerPath $rpcServer
 $reportPath = Write-Report -GpuInfo $gpuInfo -Cuda $cuda -TailscaleIP $tailscaleIP -TailscaleHostname $tailscaleHostname -AgentConfigPath $configPath
 Write-Host "`nProvisioning complete." -ForegroundColor Green
 if ($ProgressPath) {
@@ -646,7 +655,7 @@ if ($ProgressPath) {
     [System.IO.File]::WriteAllText($ProgressPath, ($progress | ConvertTo-Json -Compress), [System.Text.UTF8Encoding]::new($false))
 }
 Write-Host "Agent: $(Join-Path $TetherRoot 'bin\tether-agent.exe')"
-Write-Host "RPC endpoint: $tailscaleIP`:$RPCPort"
+Write-Host "Local RPC endpoint: 127.0.0.1`:$RPCPort"
 Write-Host "Capability report: $reportPath"
 Write-Host "`nAdd this node to the Orchestrator allowlist:"
 Write-Host "  - hostname: $tailscaleHostname"
