@@ -32,16 +32,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
 
-	"tether/internal/agent"
-	"tether/internal/certs"
 	"tether/internal/httpserver"
-	"tether/internal/registry"
-	"tether/internal/trust"
 )
 
 const orchestratorIdentityName = "orchestrator"
@@ -58,8 +53,9 @@ func main() {
 	modelsDir := flag.String("models-dir", defaultModelsDir, "directory containing GGUF models")
 	llamaServer := flag.String("llama-server", "", "path to llama.cpp llama-server")
 	localGPURequested := flag.Bool("local-gpu", true, "allow this Orchestrator to contribute its local CUDA GPU")
-	rpc := flag.String("rpc", "auto", "comma-separated RPC endpoints, auto, or none")
-	allowlistPath := flag.String("allowlist", "node_allowlist.yaml", "path to Tether node allowlist for --rpc auto")
+	agentsFlag := flag.String("agents", "auto", "paired Agent hostnames separated by commas, auto, or none")
+	legacyRPC := flag.String("rpc", "", "deprecated alias for --agents; raw host:port endpoints are rejected")
+	allowlistPath := flag.String("allowlist", "node_allowlist.yaml", "path to Tether node allowlist for Agent selection")
 	apiKey := flag.String("api-key", os.Getenv("TETHER_API_KEY"), "API key required by every client (or set TETHER_API_KEY)")
 	ctxSize := flag.Int("ctx-size", 8192, "context size per loaded model")
 	parallel := flag.Int("parallel", 2, "parallel requests per loaded model")
@@ -68,6 +64,23 @@ func main() {
 	modelOverhead := flag.Float64("model-overhead", 1.15, "multiply GGUF file size by this runtime memory reserve")
 	kvBytesPerToken := flag.Int64("kv-cache-bytes-per-token", 256*1024, "conservative KV-cache VRAM reserve per context token")
 	flag.Parse()
+	selectionValue := *agentsFlag
+	legacySet, agentsSet := false, false
+	flag.Visit(func(f *flag.Flag) {
+		legacySet = legacySet || f.Name == "rpc"
+		agentsSet = agentsSet || f.Name == "agents"
+	})
+	if legacySet {
+		if agentsSet {
+			log.Fatal("use only --agents; --rpc is a deprecated alias")
+		}
+		selectionValue = *legacyRPC
+		log.Printf("WARNING: --rpc is deprecated; use --agents with paired Agent hostnames")
+	}
+	selection, err := parseAgentSelection(selectionValue)
+	if err != nil {
+		log.Fatalf("invalid Agent selection: %v", err)
+	}
 	if *llamaServer == "" {
 		if *localGPURequested {
 			if info, err := os.Stat(cudaLlamaServer); err == nil && !info.IsDir() {
@@ -107,7 +120,7 @@ func main() {
 
 	shutdownRequested := make(chan struct{}, 1)
 	gateway, err := newGateway(gatewayConfig{
-		modelsDir: *modelsDir, llamaServer: *llamaServer, rpcMode: *rpc, allowlistPath: *allowlistPath,
+		modelsDir: *modelsDir, llamaServer: *llamaServer, agentSelection: selection, allowlistPath: *allowlistPath,
 		apiKey: *apiKey, ctxSize: *ctxSize, parallel: *parallel, idleTimeout: *idleUnload, workerStartTimeout: *workerStartTimeout, localGPU: localGPU,
 		modelOverhead: *modelOverhead, kvBytesPerToken: *kvBytesPerToken,
 		requestShutdown: func() {
@@ -131,7 +144,7 @@ func main() {
 
 	log.Printf("Tether API listening on http://%s/v1", *listen)
 	log.Printf("OpenAI routes: GET /v1/models, POST /v1/chat/completions")
-	if strings.EqualFold(*rpc, "auto") {
+	if selection.mode == agentsAuto {
 		log.Printf("RPC placement: whole-model GPU when it fits; RPC mesh only when required")
 	}
 	if !*localGPURequested {
@@ -180,67 +193,6 @@ func llamaServerHasCUDA(path string) (bool, error) {
 		return false, fmt.Errorf("running --list-devices: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return bytes.Contains(bytes.ToLower(output), []byte("cuda")), nil
-}
-
-// resolveRPCEndpoints handles a manual list, an intentionally local-only
-// server, or the Tether registry's currently online Agents. Auto mode is
-// conservative: an endpoint is returned only after its pinned Agent reports
-// that its local RPC server is Running.
-func resolveRPCEndpoints(value, allowlistPath string) ([]string, error) {
-	value = strings.TrimSpace(value)
-	switch strings.ToLower(value) {
-	case "", "none":
-		return nil, nil
-	case "auto":
-		return runningAgentEndpoints(allowlistPath)
-	default:
-		endpoints := strings.Split(value, ",")
-		for i, endpoint := range endpoints {
-			endpoint = strings.TrimSpace(endpoint)
-			if _, _, err := net.SplitHostPort(endpoint); err != nil {
-				return nil, fmt.Errorf("RPC endpoint %q must be host:port: %w", endpoint, err)
-			}
-			endpoints[i] = endpoint
-		}
-		return endpoints, nil
-	}
-}
-
-func runningAgentEndpoints(allowlistPath string) ([]string, error) {
-	allowlist, err := registry.LoadAllowlist(allowlistPath)
-	if err != nil {
-		return nil, err
-	}
-	peers, err := registry.QueryTailscalePeers()
-	if err != nil {
-		return nil, err
-	}
-	identity, err := certs.LoadOrCreate(orchestratorIdentityName)
-	if err != nil {
-		return nil, err
-	}
-
-	nodes := registry.Build(allowlist, peers).Online()
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Hostname < nodes[j].Hostname })
-	endpoints := make([]string, 0, len(nodes))
-	for _, node := range nodes {
-		tlsConfig, err := trust.PinnedTLSConfig(identity.TLSCertificate(), node.Hostname, false)
-		if err != nil {
-			log.Printf("Skipping %s: Agent is not paired", node.Hostname)
-			continue
-		}
-		status, err := agent.NewClient(tlsConfig).GetStatus(fmt.Sprintf("%s:%d", node.TailscaleIP, node.AgentPort))
-		if err != nil {
-			log.Printf("Skipping %s: Agent is unreachable", node.Hostname)
-			continue
-		}
-		if status.Status != "Running" {
-			log.Printf("Skipping %s: RPC server is %s", node.Hostname, status.Status)
-			continue
-		}
-		endpoints = append(endpoints, fmt.Sprintf("%s:%d", node.TailscaleIP, node.RPCPort))
-	}
-	return endpoints, nil
 }
 
 func isLoopbackHost(host string) bool {

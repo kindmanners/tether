@@ -726,7 +726,7 @@ func (a *OrchestratorApp) StartGateway() error {
 	if err := os.MkdirAll(modelsDirectory, 0700); err != nil {
 		return fmt.Errorf("creating model library: %w", err)
 	}
-	arguments := []string{"--rpc", "auto", "--llama-server", llamaServer, "--allowlist", allowlistPath, "--models-dir", modelsDirectory}
+	arguments := []string{"--agents", "auto", "--llama-server", llamaServer, "--allowlist", allowlistPath, "--models-dir", modelsDirectory}
 	if !config.ContributeLocalGPU {
 		arguments = append(arguments, "--local-gpu=false")
 	}

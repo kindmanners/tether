@@ -44,7 +44,7 @@ import (
 type gatewayConfig struct {
 	modelsDir          string
 	llamaServer        string
-	rpcMode            string
+	agentSelection     agentSelection
 	allowlistPath      string
 	apiKey             string
 	ctxSize            int
@@ -57,23 +57,31 @@ type gatewayConfig struct {
 	requestShutdown    func()
 	planner            func(string) (placement.Plan, error)
 	launcher           func(context.Context, string, string, placement.Plan) (*modelWorker, error)
+	tunnelFactory      func(context.Context, placement.Node) (workerTunnel, error)
 }
 
 type modelWorker struct {
-	key     string
-	modelID string
-	model   string
-	plan    placement.Plan
-	address string
-	cmd     *exec.Cmd
-	done    chan struct{}
-	exitErr error
-	apiKey  string
-	active  int
-	state   string
-	lastUse time.Time
-	timer   *time.Timer
-	pinned  bool
+	key         string
+	modelID     string
+	model       string
+	plan        placement.Plan
+	address     string
+	cmd         *exec.Cmd
+	done        chan struct{}
+	exitErr     error
+	apiKey      string
+	active      int
+	state       string
+	lastUse     time.Time
+	timer       *time.Timer
+	pinned      bool
+	tunnels     []workerTunnel
+	tunnelsOnce sync.Once
+}
+
+type workerTunnel interface {
+	Endpoint() string
+	Close() error
 }
 
 type gateway struct {
@@ -582,6 +590,7 @@ func (g *gateway) unloadLocked(worker *modelWorker) bool {
 	g.mu.Unlock()
 	_ = executil.KillProcessTree(worker.cmd)
 	<-worker.done
+	worker.closeTunnels()
 	g.mu.Lock()
 	if g.workers[worker.key] == worker {
 		delete(g.workers, worker.key)
@@ -602,8 +611,19 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 	}
 	address := listener.Addr().String()
 	_ = listener.Close()
+	tunnels, endpoints, err := g.openWorkerTunnels(plan)
+	if err != nil {
+		return nil, err
+	}
+	closeTunnels := true
+	defer func() {
+		if closeTunnels {
+			for _, tunnel := range tunnels {
+				_ = tunnel.Close()
+			}
+		}
+	}()
 	args := []string{"--model", modelPath, "--host", "127.0.0.1", "--port", strings.TrimPrefix(address, "127.0.0.1:"), "--ctx-size", fmt.Sprint(g.cfg.ctxSize), "--parallel", fmt.Sprint(g.cfg.parallel), "--n-gpu-layers", "99"}
-	endpoints := rpcEndpoints(plan)
 	if len(endpoints) > 0 {
 		args = append(args, "--rpc", strings.Join(endpoints, ","))
 	}
@@ -629,7 +649,7 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 	if err != nil {
 		return nil, fmt.Errorf("starting model worker: %w", err)
 	}
-	worker := &modelWorker{modelID: modelID, model: modelPath, plan: plan, address: address, cmd: cmd, done: make(chan struct{}), apiKey: apiKey}
+	worker := &modelWorker{modelID: modelID, model: modelPath, plan: plan, address: address, cmd: cmd, done: make(chan struct{}), apiKey: apiKey, tunnels: tunnels}
 	go func() {
 		worker.exitErr = cmd.Wait()
 		releaseLifetime()
@@ -640,6 +660,7 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 		<-worker.done
 		return nil, err
 	}
+	closeTunnels = false
 	log.Printf("loaded %s using %s placement on %s", modelID, plan.Mode, strings.Join(planNodeNames(plan), ", "))
 	return worker, nil
 }
@@ -703,6 +724,7 @@ func planUsesLocalGPU(plan placement.Plan) bool {
 
 func (g *gateway) watchWorker(worker *modelWorker) {
 	<-worker.done
+	worker.closeTunnels()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.workers[worker.key] != worker {
@@ -799,7 +821,11 @@ func (g *gateway) shutdown(ctx context.Context) {
 	for _, worker := range workers {
 		select {
 		case <-worker.done:
+			worker.closeTunnels()
 		case <-ctx.Done():
+			for _, remaining := range workers {
+				remaining.closeTunnels()
+			}
 			return
 		}
 	}
@@ -825,12 +851,43 @@ func (g *gateway) workerForModelLocked(modelID string) *modelWorker {
 	}
 	return nil
 }
-func rpcEndpoints(plan placement.Plan) []string {
-	endpoints := make([]string, 0, len(plan.Nodes))
-	for _, n := range plan.Nodes {
-		if !n.Local && n.Endpoint != "" {
-			endpoints = append(endpoints, n.Endpoint)
-		}
+func (g *gateway) openWorkerTunnels(plan placement.Plan) ([]workerTunnel, []string, error) {
+	factory := g.cfg.tunnelFactory
+	if factory == nil {
+		factory = openAgentTunnel
 	}
-	return endpoints
+	tunnels := make([]workerTunnel, 0, len(plan.Nodes))
+	endpoints := make([]string, 0, len(plan.Nodes))
+	for _, node := range plan.Nodes {
+		if node.Local {
+			continue
+		}
+		tunnel, err := factory(g.ctx, node)
+		if err != nil {
+			for _, opened := range tunnels {
+				_ = opened.Close()
+			}
+			return nil, nil, fmt.Errorf("opening RPC tunnel for Agent %q: %w", node.Hostname, err)
+		}
+		endpoint := tunnel.Endpoint()
+		host, _, err := net.SplitHostPort(endpoint)
+		if err != nil || host != "127.0.0.1" {
+			_ = tunnel.Close()
+			for _, opened := range tunnels {
+				_ = opened.Close()
+			}
+			return nil, nil, fmt.Errorf("tunnel for Agent %q returned non-loopback endpoint %q", node.Hostname, endpoint)
+		}
+		tunnels = append(tunnels, tunnel)
+		endpoints = append(endpoints, endpoint)
+	}
+	return tunnels, endpoints, nil
+}
+
+func (w *modelWorker) closeTunnels() {
+	w.tunnelsOnce.Do(func() {
+		for _, tunnel := range w.tunnels {
+			_ = tunnel.Close()
+		}
+	})
 }
