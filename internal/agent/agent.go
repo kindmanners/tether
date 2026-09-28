@@ -176,7 +176,6 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 
 	err := s.manager.Start(process.StartParams{
 		BinaryPath: s.config.RPCServerPath,
-		Host:       s.config.RPCListenHost,
 		Port:       req.Port,
 	})
 	if err != nil {
