@@ -32,7 +32,7 @@ LLAMA_CPP_PATH=""
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tether"
 AGENT_PORT=7420
 RPC_PORT=50053
-LLAMA_CPP_REVISION="3057bb66c86c46d5781e50e85462a760ba7d1feb"
+LLAMA_CPP_REVISION=""
 
 usage() {
   printf '%s\n' 'Usage: bootstrap-linux-node.sh --provision [--install-missing] [--llama-cpp-path PATH] [--progress-path PATH] [--cancel-path PATH]'
@@ -56,6 +56,8 @@ while (($#)); do
   esac
   shift
 done
+
+[[ "$LLAMA_CPP_REVISION" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' '--llama-cpp-revision with an explicitly reviewed lowercase 40-character SHA is required.' >&2; exit 2; }
 
 progress() {
   local step="$1" detail="$2"

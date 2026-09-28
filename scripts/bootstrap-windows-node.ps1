@@ -41,11 +41,12 @@ param(
     [int]$RPCPort = 50053,
     [string]$TailnetCIDR = '100.64.0.0/10',
     [string]$MinimumCudaVersion = '13.4',
-    [string]$LlamaCppRevision = '3057bb66c86c46d5781e50e85462a760ba7d1feb'
+    [Parameter(Mandatory=$true)][string]$LlamaCppRevision
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($LlamaCppRevision -notmatch '^[0-9a-f]{40}$') { throw 'LlamaCppRevision must be an explicitly reviewed lowercase 40-character SHA.' }
 $script:missingRequirements = [System.Collections.Generic.List[string]]::new()
 $script:installationOccurred = $false
 

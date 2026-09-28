@@ -1535,7 +1535,7 @@ func (a *OrchestratorApp) runWindowsOrchestratorProvisioner(script, progressPath
 	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
 	if err == nil {
 		defer logFile.Close()
-		arguments := []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-InstallMissing", "-ProgressPath", progressPath}
+		arguments := []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-InstallMissing", "-ProgressPath", progressPath, "-LlamaCppRevision", bootstrapassets.LlamaCppRevision()}
 		if contributeGPU {
 			arguments = append(arguments, "-LocalGPU")
 		}
@@ -1594,7 +1594,7 @@ func (a *OrchestratorApp) runLinuxOrchestratorProvisioner(script, progressPath, 
 	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
 	if err == nil {
 		defer logFile.Close()
-		arguments := []string{script, "--install-missing", "--progress-path", progressPath}
+		arguments := []string{script, "--install-missing", "--progress-path", progressPath, "--llama-cpp-revision", bootstrapassets.LlamaCppRevision()}
 		if contributeGPU {
 			arguments = append(arguments, "--local-gpu")
 		}

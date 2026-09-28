@@ -1,0 +1,45 @@
+name: Check llama.cpp pin
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: llama-cpp-pin-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare reviewed pin with latest upstream build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pinned="$(tr -d '\r\n' < scripts/llama-cpp-revision.txt)"
+          [[ "$pinned" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid pinned SHA'; exit 1; }
+          latest_line="$(git ls-remote --tags --refs https://github.com/ggml-org/llama.cpp.git 'refs/tags/b*' | sed -nE 's#^([0-9a-f]{40})[[:space:]]+refs/tags/b([0-9]+)$#\2 \1#p' | sort -n | tail -1)"
+          latest_tag="b${latest_line%% *}"
+          latest_sha="${latest_line##* }"
+          [[ "$latest_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid upstream SHA'; exit 1; }
+          title='Update pinned llama.cpp revision'
+          issue="$(gh issue list --state open --search "$title in:title" --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -1)"
+          if [[ "$pinned" == "$latest_sha" ]]; then
+            if [[ -n "$issue" ]]; then gh issue close "$issue" --comment "The reviewed pin now matches $latest_tag ($latest_sha)."; fi
+            exit 0
+          fi
+          body="$(printf 'The reviewed llama.cpp pin is stale.\n\n- Pinned SHA: `%s`\n- Latest upstream build: `%s`\n- Latest SHA: `%s`\n- Compare: https://github.com/ggml-org/llama.cpp/compare/%s...%s\n- Workflow: %s/actions/runs/%s\n\nHuman compatibility and security review is required. This workflow will not edit the pin or publish artifacts.\n' "$pinned" "$latest_tag" "$latest_sha" "$pinned" "$latest_sha" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_RUN_ID")"
+          if [[ -n "$issue" ]]; then
+            gh issue edit "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
