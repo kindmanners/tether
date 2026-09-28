@@ -87,8 +87,8 @@ which uses the exact certificates established during pairing. Allow only the
 specific Orchestrator to reach Agent TCP 7420. Certificate rotation fails
 closed until the node is explicitly re-paired.
 
-For example, assign role tags to the two machine types and add a Tailscale
-grant for the exact ports (replace `50053` with the Agent's `rpc_port`):
+For example, assign role tags to the two machine types and grant the
+Orchestrator access only to the Agent control and tunnel port:
 
 ```jsonc
 {

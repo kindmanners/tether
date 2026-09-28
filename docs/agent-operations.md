@@ -34,6 +34,13 @@ does not load a model and listens only on `127.0.0.1`. Load models through the
 Orchestrator or `tether-api`; remote data uses bounded HTTP/1.1 CONNECT streams
 on the paired mTLS Agent port.
 
+An Agent admits at most eight establishing or active RPC streams for one peer
+certificate and at most sixteen streams in total. Establishment is bounded by
+timeouts. Once a valid stream is established, Tether applies no idle or read
+deadline because llama.cpp RPC connections may legitimately remain quiet for
+long periods. Stopping the managed RPC process or shutting down either Tether
+side closes the associated streams.
+
 ## Re-pair an Agent
 
 Use **Re-pair Orchestrator** in `tether-agent` when intentionally rotating

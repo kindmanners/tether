@@ -12,6 +12,30 @@ Tether is currently under active development. Security fixes are provided for th
 
 Users are encouraged to update to the latest available version before reporting a vulnerability that may already have been fixed.
 
+## RPC Containment and Trust Boundaries
+
+Tether does not make llama.cpp's RPC backend intrinsically safe. The upstream
+[llama.cpp security policy](https://github.com/ggml-org/llama.cpp/blob/master/SECURITY.md)
+recommends against using RPC in untrusted environments or networks.
+Tether reduces network exposure by binding each managed `ggml-rpc-server` to
+`127.0.0.1` and carrying remote RPC through HTTP/1.1 CONNECT streams on the
+existing exact certificate-pinned mTLS Agent port.
+
+The Orchestrator and explicitly paired Agents are trusted peers. A certificate
+is tied to the exact paired hostname; substitution or rotation fails until the
+operator explicitly re-pairs that node. Authenticated peers can still send
+malicious RPC data, so pairing is an admission of trust rather than a sandbox.
+
+IPv4 localhost is also a trust boundary. This design does not protect against
+hostile local users or processes, sandbox llama.cpp, or provide multi-tenant
+isolation. Never expose an Agent's local RPC port to a Tailnet, LAN, or the
+internet. Only the mTLS Agent control port should be reachable between nodes.
+
+Tether tracks one exact reviewed upstream revision in
+`scripts/llama-cpp-revision.txt`. Automated checks may report that this pin is
+stale, but updating the pin, rebuilding binaries, and publishing releases all
+require human review.
+
 ## Reporting a Vulnerability
 
 Please **do not report security vulnerabilities through public GitHub issues, discussions, or pull requests**.

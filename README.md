@@ -50,6 +50,22 @@ Orchestrator starts it as a sibling process and exposes the local endpoint at
 run and displays it beside the endpoint; configure clients to send that key as
 an OpenAI Bearer token.
 
+### llama.cpp revision policy
+
+Tether uses upstream llama.cpp without a fork. The exact reviewed commit in
+[`scripts/llama-cpp-revision.txt`](scripts/llama-cpp-revision.txt) is the sole
+source of truth for repository-managed builds. Desktop setup embeds and passes
+that SHA to the bootstrap scripts; standalone bootstrap use must provide an
+explicit reviewed SHA and never falls back to upstream `HEAD`.
+
+The weekly and manually triggered
+[`Check llama.cpp pin`](.github/workflows/llama-cpp-pin.yml) workflow only
+checks whether the pin is stale. It creates or updates one GitHub issue
+containing the latest upstream build tag and SHA, and closes that issue when
+the pin is current. It never edits the revision file, rebuilds binaries, opens
+or merges a pull request, or publishes a release. Updating llama.cpp always
+requires human compatibility and security review.
+
 ## Quick start
 
 1. Build the Orchestrator and Agent, then prepare each GPU node with the
