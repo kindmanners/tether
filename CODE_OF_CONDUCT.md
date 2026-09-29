@@ -81,6 +81,10 @@ This Code of Conduct applies within all Tether community spaces, including the G
 
 It also applies when an individual is officially representing the Tether project in public or other spaces. Examples include using an official project email address, posting through an official social media account, or acting as an appointed representative at an online or offline event.
 
+## TL:DR
+
+Don't be an asshole <3
+
 ## Attribution
 
 This Code of Conduct is adapted from the Contributor Covenant, version 3.0, permanently available at [https://www.contributor-covenant.org/version/3/0/](https://www.contributor-covenant.org/version/3/0/).

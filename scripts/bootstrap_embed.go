@@ -18,7 +18,17 @@
 // terminal flow always execute the same reviewed provisioning code.
 package scripts
 
-import _ "embed"
+import (
+	_ "embed"
+	"strings"
+)
+
+//go:embed llama-cpp-revision.txt
+var llamaCppRevision string
+
+// LlamaCppRevision returns the one reviewed upstream source revision used by
+// every embedded bootstrapper.
+func LlamaCppRevision() string { return strings.TrimSpace(llamaCppRevision) }
 
 // WindowsNodeBootstrap is materialized into the user's local Tether install
 // directory only while the Agent needs to run elevated setup.

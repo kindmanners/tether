@@ -55,6 +55,44 @@ func TestPinnedTLSConfigAcceptsMatchingPeerAndRejectsSubstitution(t *testing.T) 
 	if serverErr == nil {
 		t.Fatal("server accepted a substituted client certificate")
 	}
+
+	serverErr, _ = tlsHandshake(serverConfig, &tls.Config{InsecureSkipVerify: true})
+	if serverErr == nil {
+		t.Fatal("server accepted a client without a certificate")
+	}
+
+	if _, err := PinnedTLSConfig(orchestratorIdentity.TLSCertificate(), "unpaired-agent", false); err == nil {
+		t.Fatal("client TLS configuration accepted an unpaired Agent")
+	}
+
+	agentB, err := certs.LoadOrCreate("tls-agent-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Pin("tls-agent-b", agentB.CertDER); err != nil {
+		t.Fatal(err)
+	}
+	clientForB, err := PinnedTLSConfig(orchestratorIdentity.TLSCertificate(), "tls-agent-b", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, clientErr = tlsHandshake(serverConfig, clientForB)
+	if clientErr == nil {
+		t.Fatal("Agent A certificate was accepted as Agent B")
+	}
+
+	rotatedAgent, err := certs.LoadOrCreate("tls-agent-rotated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedServerConfig, err := PinnedTLSConfig(rotatedAgent.TLSCertificate(), "tls-orchestrator", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, clientErr = tlsHandshake(rotatedServerConfig, clientConfig)
+	if clientErr == nil {
+		t.Fatal("rotated Agent certificate was accepted before re-pairing")
+	}
 }
 
 func tlsHandshake(serverConfig, clientConfig *tls.Config) (error, error) {

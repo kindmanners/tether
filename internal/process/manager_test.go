@@ -10,8 +10,9 @@ package process
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"os"
-	"strconv"
 	"testing"
 	"time"
 )
@@ -24,11 +25,10 @@ const (
 // TestMain lets the package's test executable act as a controllable child for
 // Manager without requiring a shell or platform-specific helper program.
 func TestMain(m *testing.M) {
-	host, port := helperArguments(os.Args)
-	switch host {
+	helperArguments(os.Args)
+	switch os.Getenv("TETHER_PROCESS_TEST_MODE") {
 	case testSleepHost:
-		seconds, _ := strconv.Atoi(port)
-		time.Sleep(time.Duration(seconds) * time.Second)
+		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	case testCrashHost:
 		os.Exit(17)
@@ -51,7 +51,7 @@ func helperArguments(arguments []string) (string, string) {
 
 func TestIntentionalStopDoesNotRecordCrashError(t *testing.T) {
 	manager := NewManager()
-	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testSleepHost, Port: 30}); err != nil {
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Port: 30, testMode: testSleepHost}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
@@ -82,10 +82,10 @@ func TestFreshManagerIsStoppedAndIdleStopIsNoOp(t *testing.T) {
 
 func TestDoubleStartRejectedAndRestartAfterCrashAllowed(t *testing.T) {
 	manager := NewManager()
-	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testSleepHost, Port: 30}); err != nil {
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Port: 30, testMode: testSleepHost}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testSleepHost, Port: 30}); err == nil {
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Port: 30, testMode: testSleepHost}); err == nil {
 		t.Fatal("second Start() succeeded while process was running")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -94,7 +94,7 @@ func TestDoubleStartRejectedAndRestartAfterCrashAllowed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testCrashHost, Port: 1}); err != nil {
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Port: 1, testMode: testCrashHost}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -104,7 +104,7 @@ func TestDoubleStartRejectedAndRestartAfterCrashAllowed(t *testing.T) {
 	if got := manager.Status(); got != StatusCrashed {
 		t.Fatalf("Status() = %s after crash", got)
 	}
-	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testSleepHost, Port: 30}); err != nil {
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Port: 30, testMode: testSleepHost}); err != nil {
 		t.Fatalf("Start() after crash = %v", err)
 	}
 	if err := manager.Stop(ctx); err != nil {
@@ -114,7 +114,7 @@ func TestDoubleStartRejectedAndRestartAfterCrashAllowed(t *testing.T) {
 
 func TestUnexpectedExitRecordsCrashError(t *testing.T) {
 	manager := NewManager()
-	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Host: testCrashHost, Port: 1}); err != nil {
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Port: 1, testMode: testCrashHost}); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
@@ -127,6 +127,76 @@ func TestUnexpectedExitRecordsCrashError(t *testing.T) {
 	}
 	if err := manager.LastExitError(); err == nil {
 		t.Fatal("LastExitError() = nil after unexpected exit")
+	}
+}
+
+func TestAcquireRPCIsLoopbackAndLeaseClosesOnStop(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() {
+				_, _ = io.Copy(conn, conn)
+				_ = conn.Close()
+			}()
+		}
+	}()
+
+	manager := NewManager()
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Port: port, testMode: testSleepHost}); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := manager.AcquireRPC(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lease.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(lease, buf); err != nil || string(buf) != "ping" {
+		t.Fatalf("echo = %q, %v", buf, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := manager.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = lease.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if _, err := lease.Read(make([]byte, 1)); err == nil {
+		t.Fatal("generation lease remained open after process stop")
+	}
+
+	if err := manager.Start(StartParams{BinaryPath: testExecutable(t), Port: port, testMode: testSleepHost}); err != nil {
+		t.Fatalf("restarting on the same managed port: %v", err)
+	}
+	newLease, err := manager.AcquireRPC(context.Background())
+	if err != nil {
+		t.Fatalf("acquiring restarted generation: %v", err)
+	}
+	defer newLease.Close()
+	if _, err := newLease.Write([]byte("next")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(newLease, buf); err != nil || string(buf) != "next" {
+		t.Fatalf("restarted generation echo = %q, %v", buf, err)
+	}
+	if err := manager.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcquireRPCRejectsInactiveProcess(t *testing.T) {
+	if _, err := NewManager().AcquireRPC(context.Background()); err == nil {
+		t.Fatal("AcquireRPC succeeded without a managed process")
 	}
 }
 

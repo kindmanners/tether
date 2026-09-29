@@ -121,7 +121,7 @@ function updatePanels(state) {
   document.querySelector('#provision').textContent = state.provisioning ? 'Local setup is running…' : 'Run audited local setup';
   document.querySelector('#setup-description').textContent = state.platform === 'linux'
     ? 'The audited Linux setup repeats this read-only preflight, builds the pinned llama.cpp CUDA RPC server, writes only local Agent configuration and a capability report, and records every stage in a persistent log. It never pairs this node or changes firewall rules automatically.'
-    : 'The audited Windows script checks prerequisites, handles Tailscale sign-in when needed, builds the pinned llama.cpp CUDA RPC server, adds Tailnet-only firewall rules, and writes the local Agent configuration.';
+    : 'The audited Windows script checks prerequisites, handles Tailscale sign-in when needed, builds the pinned llama.cpp CUDA RPC server, exposes only the mTLS Agent port to the Tailnet, and writes loopback-only RPC configuration.';
 
   const finishSetup = document.querySelector('#finish-setup');
   finishSetup.hidden = localSetupComplete || !state.canProvision;

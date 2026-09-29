@@ -39,6 +39,48 @@ const (
 	placementProbeConcurrency = 4
 )
 
+type agentSelectionMode int
+
+const (
+	agentsNone agentSelectionMode = iota
+	agentsAuto
+	agentsExplicit
+)
+
+type agentSelection struct {
+	mode      agentSelectionMode
+	hostnames []string
+}
+
+func parseAgentSelection(value string) (agentSelection, error) {
+	value = strings.TrimSpace(value)
+	switch strings.ToLower(value) {
+	case "none":
+		return agentSelection{mode: agentsNone}, nil
+	case "auto":
+		return agentSelection{mode: agentsAuto}, nil
+	case "":
+		return agentSelection{}, fmt.Errorf("agent selection must be auto, none, or comma-separated paired Agent hostnames")
+	}
+	parts := strings.Split(value, ",")
+	seen := make(map[string]bool, len(parts))
+	for i, part := range parts {
+		hostname := strings.TrimSpace(part)
+		if hostname == "" {
+			return agentSelection{}, fmt.Errorf("agent selection contains an empty hostname")
+		}
+		if strings.EqualFold(hostname, "auto") || strings.EqualFold(hostname, "none") || strings.ContainsAny(hostname, ":[]/") {
+			return agentSelection{}, fmt.Errorf("%q is not an Agent hostname; replace legacy host:port RPC endpoints with paired Agent hostnames", hostname)
+		}
+		if seen[hostname] {
+			return agentSelection{}, fmt.Errorf("agent hostname %q is duplicated", hostname)
+		}
+		seen[hostname] = true
+		parts[i] = hostname
+	}
+	return agentSelection{mode: agentsExplicit, hostnames: parts}, nil
+}
+
 // planFor obtains a fresh Agent capability response immediately before a new
 // model worker is launched. A running worker is intentionally reused; its
 // reservation is already accounted for by the node it occupies.
@@ -49,32 +91,24 @@ func (g *gateway) planFor(modelPath string) (placement.Plan, error) {
 	}
 	modelBytes := int64(math.Ceil(float64(size) * g.cfg.modelOverhead))
 	requirement := placement.Requirement{ModelBytes: modelBytes, KVCacheBytes: int64(g.cfg.ctxSize) * g.cfg.kvBytesPerToken}
-	switch strings.ToLower(strings.TrimSpace(g.cfg.rpcMode)) {
-	case "", "none":
+	switch g.cfg.agentSelection.mode {
+	case agentsNone:
 		if !g.cfg.localGPU {
 			return placement.Plan{}, fmt.Errorf("local-only placement is disabled because this Orchestrator is not contributing a GPU")
 		}
 		return placement.Plan{Mode: "local", Nodes: []placement.Node{{Hostname: "orchestrator", Local: true}}, Requirement: requirement}, nil
-	case "auto":
-		nodes, err := discoverPlacementNodes(g.cfg.allowlistPath, g.cfg.localGPU)
+	case agentsAuto, agentsExplicit:
+		nodes, err := discoverPlacementNodes(g.cfg.allowlistPath, g.cfg.localGPU, g.cfg.agentSelection)
 		if err != nil {
 			return placement.Plan{}, err
 		}
 		return placement.Select(nodes, requirement)
 	default:
-		endpoints, err := resolveRPCEndpoints(g.cfg.rpcMode, g.cfg.allowlistPath)
-		if err != nil {
-			return placement.Plan{}, err
-		}
-		nodes := make([]placement.Node, 0, len(endpoints))
-		for _, endpoint := range endpoints {
-			nodes = append(nodes, placement.Node{Hostname: endpoint, Endpoint: endpoint, GPUFreeBytes: []int64{1}})
-		}
-		return placement.Plan{Mode: "manual", Nodes: nodes, Requirement: requirement}, nil
+		return placement.Plan{}, fmt.Errorf("invalid Agent selection")
 	}
 }
 
-func discoverPlacementNodes(allowlistPath string, localGPU bool) ([]placement.Node, error) {
+func discoverPlacementNodes(allowlistPath string, localGPU bool, selection agentSelection) ([]placement.Node, error) {
 	allowlist, err := registry.LoadAllowlist(allowlistPath)
 	if err != nil {
 		return nil, err
@@ -89,10 +123,32 @@ func discoverPlacementNodes(allowlistPath string, localGPU bool) ([]placement.No
 	}
 	self, selfErr := registry.SelfHostname()
 	regNodes := registry.Build(allowlist, peers).Online()
+	filtered := regNodes[:0]
+	for _, node := range regNodes {
+		if node.Role == "rpc-node" {
+			filtered = append(filtered, node)
+		}
+	}
+	regNodes = filtered
 	sort.Slice(regNodes, func(i, j int) bool { return regNodes[i].Hostname < regNodes[j].Hostname })
+	if selection.mode == agentsExplicit {
+		byName := make(map[string]*registry.Node, len(regNodes))
+		for _, node := range regNodes {
+			byName[node.Hostname] = node
+		}
+		selected := make([]*registry.Node, 0, len(selection.hostnames))
+		for _, hostname := range selection.hostnames {
+			node, ok := byName[hostname]
+			if !ok {
+				return nil, fmt.Errorf("selected Agent %q is unknown, offline, or not an rpc-node", hostname)
+			}
+			selected = append(selected, node)
+		}
+		regNodes = selected
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), placementProbeTimeout)
 	defer cancel()
-	return probePlacementNodes(ctx, regNodes, placementProbeConcurrency, func(ctx context.Context, node *registry.Node) (placement.Node, bool) {
+	result := probePlacementNodes(ctx, regNodes, placementProbeConcurrency, func(ctx context.Context, node *registry.Node) (placement.Node, bool) {
 		if selfErr == nil && node.Hostname == self {
 			if !localGPU {
 				return placement.Node{}, false
@@ -117,8 +173,12 @@ func discoverPlacementNodes(allowlistPath string, localGPU bool) ([]placement.No
 		if err != nil {
 			return placement.Node{}, false
 		}
-		return placement.Node{Hostname: node.Hostname, Endpoint: fmt.Sprintf("%s:%d", node.TailscaleIP, node.RPCPort), GPUFreeBytes: gpuFreeBytes(capabilities.GPUs)}, true
-	}), nil
+		return placement.Node{Hostname: node.Hostname, AgentAddress: fmt.Sprintf("%s:%d", node.TailscaleIP, node.AgentPort), GPUFreeBytes: gpuFreeBytes(capabilities.GPUs)}, true
+	})
+	if selection.mode == agentsExplicit && len(result) != len(regNodes) {
+		return nil, fmt.Errorf("one or more selected Agents are unpaired, unreachable, or not running RPC")
+	}
+	return result, nil
 }
 
 type placementProbe func(context.Context, *registry.Node) (placement.Node, bool)

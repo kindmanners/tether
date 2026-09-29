@@ -518,6 +518,7 @@ func (a *AgentApp) runWindowsProvisioner(script, agentPath, llamaPath, progressP
 		"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
 		"-Provision", "-InstallMissing", "-AgentExecutablePath", agentPath,
 		"-LlamaCppPath", llamaPath, "-ProgressPath", progressPath, "-CancelPath", cancelPath,
+		"-LlamaCppRevision", bootstrapassets.LlamaCppRevision(),
 	}
 	quotedArguments := make([]string, len(arguments))
 	for i, argument := range arguments {
@@ -553,7 +554,7 @@ func (a *AgentApp) runLinuxProvisioner(script, progressPath, cancelPath, logPath
 	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0600)
 	if err == nil {
 		defer logFile.Close()
-		command := exec.Command("bash", script, "--provision", "--install-missing", "--progress-path", progressPath, "--cancel-path", cancelPath)
+		command := exec.Command("bash", script, "--provision", "--install-missing", "--progress-path", progressPath, "--cancel-path", cancelPath, "--llama-cpp-revision", bootstrapassets.LlamaCppRevision())
 		command.Stdout = logFile
 		command.Stderr = logFile
 		err = command.Run()

@@ -26,16 +26,20 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"tether/internal/config"
@@ -45,6 +49,12 @@ import (
 )
 
 const maxRequestBytes = 64 * 1024
+
+const (
+	maxRPCStreamsPerPeer = 8
+	maxRPCStreamsTotal   = 16
+	rpcConnectTimeout    = 10 * time.Second
+)
 
 // shutdownTimeout bounds graceful shutdown, same reasoning as
 // pairing.Server: without a bound, an idle client connection could make
@@ -92,8 +102,24 @@ type CapabilitiesResult struct {
 // startup, call Start with a cancellable context, and it serves until
 // that context is cancelled.
 type Server struct {
-	config  *agentconfig.Config
-	manager *process.Manager
+	config         *agentconfig.Config
+	manager        *process.Manager
+	streamMu       sync.Mutex
+	streams        map[*rpcStream]struct{}
+	peerStreams    map[[sha256.Size]byte]int
+	totalStreams   int
+	closing        bool
+	shutdownCtx    context.Context
+	cancelShutdown context.CancelFunc
+	streamWG       sync.WaitGroup
+}
+
+type rpcStream struct {
+	server  *Server
+	peer    [sha256.Size]byte
+	client  net.Conn
+	backend *process.RPCLease
+	once    sync.Once
 }
 
 // NewServer creates an agent command Server using cfg for the approved
@@ -103,7 +129,11 @@ type Server struct {
 // (e.g. querying status outside of an HTTP request) if that's ever
 // needed — Server doesn't need to be the sole owner of process state.
 func NewServer(cfg *agentconfig.Config, manager *process.Manager) *Server {
-	return &Server{config: cfg, manager: manager}
+	shutdownCtx, cancelShutdown := context.WithCancel(context.Background())
+	return &Server{
+		config: cfg, manager: manager, streams: make(map[*rpcStream]struct{}),
+		peerStreams: make(map[[sha256.Size]byte]int), shutdownCtx: shutdownCtx, cancelShutdown: cancelShutdown,
+	}
 }
 
 // Start begins serving on addr using tlsConfig — build tlsConfig with
@@ -120,11 +150,14 @@ func NewServer(cfg *agentconfig.Config, manager *process.Manager) *Server {
 // (cmd/tether-agent), using internal/trust and internal/certs directly,
 // exactly the way cmd/tether-agent already builds a pairing.Server.
 func (s *Server) Start(ctx context.Context, addr string, tlsConfig *tls.Config) error {
+	serverTLS := tlsConfig.Clone()
+	serverTLS.NextProtos = []string{"http/1.1"}
 	httpServer := &http.Server{
 		Addr:         addr,
 		Handler:      s.handler(),
-		TLSConfig:    tlsConfig,
+		TLSConfig:    serverTLS,
 		WriteTimeout: 30 * time.Second,
+		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 	}
 	httpserver.Apply(httpServer)
 
@@ -135,16 +168,23 @@ func (s *Server) Start(ctx context.Context, addr string, tlsConfig *tls.Config) 
 		}
 	}()
 
+	var serveErr error
 	select {
 	case <-ctx.Done():
 		// normal path: caller wants this server to stop.
 	case err := <-serverErrCh:
-		return fmt.Errorf("agent command server error: %w", err)
+		serveErr = fmt.Errorf("agent command server error: %w", err)
 	}
 
+	s.beginShutdown()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	return httpServer.Shutdown(shutdownCtx)
+	shutdownErr := httpServer.Shutdown(shutdownCtx)
+	s.streamWG.Wait()
+	if serveErr != nil {
+		return serveErr
+	}
+	return shutdownErr
 }
 
 func (s *Server) handler() http.Handler {
@@ -153,7 +193,156 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/stop", s.handleStop)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/capabilities", s.handleCapabilities)
+	mux.HandleFunc("/rpc", s.handleRPC)
 	return mux
+}
+
+func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
+	hasBody := r.ContentLength != 0 || len(r.TransferEncoding) != 0 || (r.Body != nil && r.Body != http.NoBody)
+	hasDestinationHeader := r.Header.Get("X-Tether-RPC-Target") != "" ||
+		r.Header.Get("X-Tether-RPC-Destination") != "" ||
+		r.Header.Get("X-Tether-RPC-Port") != ""
+	if r.Method != http.MethodConnect || r.ProtoMajor != 1 || r.URL.Path != "/rpc" || r.URL.RawQuery != "" || r.RequestURI != "/rpc" || hasBody || hasDestinationHeader {
+		writeError(w, http.StatusBadRequest, "RPC tunneling requires HTTP/1.1 CONNECT /rpc with no destination, query, or body")
+		return
+	}
+	if r.TLS == nil || len(r.TLS.PeerCertificates) != 1 {
+		writeError(w, http.StatusUnauthorized, "a paired client certificate is required")
+		return
+	}
+	peer := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
+	if !s.reserveStream(peer) {
+		writeError(w, http.StatusTooManyRequests, "RPC stream limit reached")
+		return
+	}
+	reserved := true
+	defer func() {
+		if reserved {
+			s.releaseReservation(peer)
+		}
+	}()
+
+	connectCtx, cancel := context.WithTimeout(r.Context(), rpcConnectTimeout)
+	stopCancel := context.AfterFunc(s.shutdownCtx, cancel)
+	backend, err := s.manager.AcquireRPC(connectCtx)
+	stopCancel()
+	cancel()
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		_ = backend.Close()
+		writeError(w, http.StatusHTTPVersionNotSupported, "RPC tunneling requires HTTP/1.1")
+		return
+	}
+	client, buffered, err := hijacker.Hijack()
+	if err != nil {
+		_ = backend.Close()
+		return
+	}
+	_ = client.SetDeadline(time.Time{})
+	_ = backend.SetDeadline(time.Time{})
+	stream := &rpcStream{server: s, peer: peer, client: client, backend: backend}
+	if !s.registerStream(stream) {
+		_ = client.Close()
+		_ = backend.Close()
+		return
+	}
+	reserved = false
+
+	if _, err := buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil || buffered.Flush() != nil {
+		stream.close()
+		return
+	}
+	defer s.streamWG.Done()
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(backend, buffered.Reader)
+		closeWrite(backend)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(client, backend)
+		closeWrite(client)
+		done <- struct{}{}
+	}()
+	<-done
+	stream.close()
+	<-done
+}
+
+func closeWrite(conn net.Conn) {
+	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = closer.CloseWrite()
+	}
+}
+
+func (s *Server) reserveStream(peer [sha256.Size]byte) bool {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	if s.closing || s.totalStreams >= maxRPCStreamsTotal || s.peerStreams[peer] >= maxRPCStreamsPerPeer {
+		return false
+	}
+	s.totalStreams++
+	s.peerStreams[peer]++
+	return true
+}
+
+func (s *Server) releaseReservation(peer [sha256.Size]byte) {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	s.totalStreams--
+	s.peerStreams[peer]--
+	if s.peerStreams[peer] == 0 {
+		delete(s.peerStreams, peer)
+	}
+}
+
+func (s *Server) registerStream(stream *rpcStream) bool {
+	s.streamMu.Lock()
+	defer s.streamMu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.streams[stream] = struct{}{}
+	s.streamWG.Add(1)
+	return true
+}
+
+func (s *Server) beginShutdown() {
+	s.streamMu.Lock()
+	if s.closing {
+		s.streamMu.Unlock()
+		return
+	}
+	s.closing = true
+	s.cancelShutdown()
+	streams := make([]*rpcStream, 0, len(s.streams))
+	for stream := range s.streams {
+		streams = append(streams, stream)
+	}
+	s.streamMu.Unlock()
+	for _, stream := range streams {
+		stream.close()
+	}
+}
+
+func (s *rpcStream) close() {
+	s.once.Do(func() {
+		_ = s.client.Close()
+		_ = s.backend.Close()
+		s.server.streamMu.Lock()
+		delete(s.server.streams, s)
+		s.server.totalStreams--
+		s.server.peerStreams[s.peer]--
+		if s.server.peerStreams[s.peer] == 0 {
+			delete(s.server.peerStreams, s.peer)
+		}
+		s.server.streamMu.Unlock()
+	})
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +365,6 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 
 	err := s.manager.Start(process.StartParams{
 		BinaryPath: s.config.RPCServerPath,
-		Host:       s.config.RPCListenHost,
 		Port:       req.Port,
 	})
 	if err != nil {

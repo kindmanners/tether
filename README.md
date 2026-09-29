@@ -15,9 +15,14 @@ Tether builds four binaries:
 | `tether-api` | A local OpenAI-compatible gateway for Tether-managed model workers. |
 | `tether-dashboard` | An independent, read-only browser dashboard for the cluster. |
 
-The Agent control channel uses pinned mTLS. The separate llama.cpp RPC data
-channel is protected by your Tailscale policy; see the
+The Agent control channel uses exact certificate-pinned mTLS. Tether carries
+llama.cpp RPC data through HTTP/1.1 CONNECT streams on that same authenticated
+Agent port; `ggml-rpc-server` itself binds only to `127.0.0.1`. See the
 [network-policy guidance](docs/configuration.md#network-policy).
+
+This containment reduces network exposure; it does not make llama.cpp's RPC
+backend intrinsically safe. Tether assumes the paired Orchestrator, paired
+Agents, and local processes on those machines are trusted peers.
 
 ## Build
 
@@ -44,6 +49,22 @@ Orchestrator starts it as a sibling process and exposes the local endpoint at
 `http://127.0.0.1:11435/v1`. The desktop generates a fresh API key for each
 run and displays it beside the endpoint; configure clients to send that key as
 an OpenAI Bearer token.
+
+### llama.cpp revision policy
+
+Tether uses upstream llama.cpp without a fork. The exact reviewed commit in
+[`scripts/llama-cpp-revision.txt`](scripts/llama-cpp-revision.txt) is the sole
+source of truth for repository-managed builds. Desktop setup embeds and passes
+that SHA to the bootstrap scripts; standalone bootstrap use must provide an
+explicit reviewed SHA and never falls back to upstream `HEAD`.
+
+The weekly and manually triggered
+[`Check llama.cpp pin`](.github/workflows/llama-cpp-pin.yml) workflow only
+checks whether the pin is stale. It creates or updates one GitHub issue
+containing the latest upstream build tag and SHA, and closes that issue when
+the pin is current. It never edits the revision file, rebuilds binaries, opens
+or merges a pull request, or publishes a release. Updating llama.cpp always
+requires human compatibility and security review.
 
 ## Quick start
 
@@ -72,7 +93,7 @@ the process environment. For a standalone launch, set `TETHER_API_KEY` or pass
 
 ```bash
 TETHER_API_KEY="replace-with-a-strong-random-token" \
-  tether-api --listen 127.0.0.1:11435 --rpc auto
+  tether-api --listen 127.0.0.1:11435 --agents auto
 ```
 
 The gateway currently provides `GET /v1/models` and

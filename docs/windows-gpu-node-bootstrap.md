@@ -32,10 +32,10 @@ place. Configure the Agent locally at `%AppData%\tether\agent_config.yaml`:
 
 ```yaml
 rpc_server_path: C:\path\to\ggml-rpc-server.exe
-rpc_listen_host: 100.x.y.z
+rpc_listen_host: 127.0.0.1
 ```
 
-Use the node's Tailscale IPv4 address for `rpc_listen_host`.
+No inbound firewall rule is needed for this local RPC port.
 
 ## Pair and operate
 
@@ -44,10 +44,9 @@ Use the node's Tailscale IPv4 address for `rpc_listen_host`.
 2. Start `tether-agent.exe` and complete its local preflight/setup.
 3. In the Orchestrator, select the online allowlisted node and enter the
    Agent's displayed, single-use pairing code.
-4. In the Tailnet policy, allow only the specific Orchestrator to reach TCP
-   7420 and the configured RPC port. The bootstrap's Windows Firewall rules
-   permit the Tailnet range and are only a broad host-level backstop; they do
-   not authorize all Tailnet peers to use the Agent or RPC server. See the
+4. In the Tailnet policy, allow only the specific Orchestrator to reach the
+   certificate-pinned Agent on TCP 7420. The bootstrap removes obsolete Tether
+   RPC firewall rules; `ggml-rpc-server` remains on loopback. See the
    [network-policy example](configuration.md#network-policy).
 
-Never expose the Agent or RPC port to a public network.
+Never expose the Agent port publicly or expose the RPC port to any network.

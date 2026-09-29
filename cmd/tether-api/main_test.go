@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -89,13 +90,15 @@ func TestProbePlacementNodesUsesOneOverallDeadline(t *testing.T) {
 	}
 }
 
-func TestResolveRPCEndpointsManual(t *testing.T) {
-	endpoints, err := resolveRPCEndpoints("100.64.0.1:50053, [fd7a:115c:a1e0::1]:50053", "unused")
-	if err != nil {
-		t.Fatalf("resolveRPCEndpoints returned an error: %v", err)
+func TestParseAgentSelection(t *testing.T) {
+	selection, err := parseAgentSelection("alpha,beta")
+	if err != nil || selection.mode != agentsExplicit || strings.Join(selection.hostnames, ",") != "alpha,beta" {
+		t.Fatalf("parseAgentSelection() = %#v, %v", selection, err)
 	}
-	if len(endpoints) != 2 || endpoints[0] != "100.64.0.1:50053" {
-		t.Fatalf("unexpected endpoints: %#v", endpoints)
+	for _, value := range []string{"100.64.0.1:50053", "alpha,alpha", "alpha,,beta", "auto,beta", ""} {
+		if _, err := parseAgentSelection(value); err == nil {
+			t.Fatalf("parseAgentSelection(%q) succeeded", value)
+		}
 	}
 }
 
@@ -118,32 +121,16 @@ func TestWorkerKeyIncludesPlacement(t *testing.T) {
 	}
 }
 
-func TestResolveRPCEndpointsLocalOnly(t *testing.T) {
-	endpoints, err := resolveRPCEndpoints("none", "unused")
-	if err != nil {
-		t.Fatalf("resolveRPCEndpoints returned an error: %v", err)
-	}
-	if len(endpoints) != 0 {
-		t.Fatalf("got endpoints %#v, want none", endpoints)
-	}
-}
-
 func TestLocalOnlyPlacementRejectsOptedOutOrchestrator(t *testing.T) {
 	model := filepath.Join(t.TempDir(), "model.gguf")
 	if err := os.WriteFile(model, []byte("GGUF"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	gateway := &gateway{cfg: gatewayConfig{
-		rpcMode: "none", modelOverhead: 1, ctxSize: 1, kvBytesPerToken: 0, localGPU: false,
+		agentSelection: agentSelection{mode: agentsNone}, modelOverhead: 1, ctxSize: 1, kvBytesPerToken: 0, localGPU: false,
 	}}
 	if _, err := gateway.planFor(model); err == nil {
 		t.Fatal("local-only placement succeeded after the Orchestrator opted out of local GPU contribution")
-	}
-}
-
-func TestResolveRPCEndpointsRejectsBadEndpoint(t *testing.T) {
-	if _, err := resolveRPCEndpoints("not-an-endpoint", "unused"); err == nil {
-		t.Fatal("resolveRPCEndpoints succeeded for an invalid endpoint")
 	}
 }
 
@@ -427,7 +414,8 @@ func TestConcurrentAcquireLaunchesOneWorker(t *testing.T) {
 
 func TestWatchWorkerRemovesCrashedWorker(t *testing.T) {
 	gateway := &gateway{models: map[string]string{"model": "model.gguf"}, workers: make(map[string]*modelWorker), states: make(map[string]modelState)}
-	worker := &modelWorker{key: "model\x00node", modelID: "model", state: "loaded", done: make(chan struct{}), exitErr: fmt.Errorf("worker failed")}
+	tunnel := &fakeWorkerTunnel{endpoint: "127.0.0.1:41001"}
+	worker := &modelWorker{key: "model\x00node", modelID: "model", state: "loaded", done: make(chan struct{}), exitErr: fmt.Errorf("worker failed"), tunnels: []workerTunnel{tunnel}}
 	gateway.workers[worker.key] = worker
 	done := make(chan struct{})
 	go func() {
@@ -442,6 +430,9 @@ func TestWatchWorkerRemovesCrashedWorker(t *testing.T) {
 	}
 	if gateway.workerForModelLocked("model") != nil || gateway.states["model"].State != "crashed" {
 		t.Fatalf("crashed worker was not removed: workers=%#v state=%#v", gateway.workers, gateway.states["model"])
+	}
+	if tunnel.closed.Load() != 1 {
+		t.Fatalf("crashed worker closed its tunnel %d times, want once", tunnel.closed.Load())
 	}
 }
 
@@ -507,8 +498,12 @@ func TestModelPlanRouteIncludesCurrentReservation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "model.gguf"), []byte("GGUF"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var tunnelCreations atomic.Int32
 	gateway, err := newGateway(gatewayConfig{modelsDir: dir, apiKey: "test-api-key", planner: func(string) (placement.Plan, error) {
 		return placement.Plan{Mode: "whole", Nodes: []placement.Node{{Hostname: "node-a"}}, Requirement: placement.Requirement{ModelBytes: 100, KVCacheBytes: 20}}, nil
+	}, tunnelFactory: func(context.Context, placement.Node) (workerTunnel, error) {
+		tunnelCreations.Add(1)
+		return &fakeWorkerTunnel{endpoint: "127.0.0.1:41001"}, nil
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -527,6 +522,9 @@ func TestModelPlanRouteIncludesCurrentReservation(t *testing.T) {
 	}
 	if plan.ReserveBytes != 120 || plan.ModelReserveBytes != 100 || plan.KVCacheBytes != 20 || plan.ObservedAt == "" {
 		t.Fatalf("unexpected placement preview: %#v", plan)
+	}
+	if tunnelCreations.Load() != 0 {
+		t.Fatalf("placement preview created %d tunnels", tunnelCreations.Load())
 	}
 }
 
@@ -560,5 +558,122 @@ func TestRefreshRestoresWorkerStateWhenModelReturns(t *testing.T) {
 	}
 	if got := gateway.states[worker.modelID].State; got != "loaded" {
 		t.Fatalf("state after restore = %q, want loaded", got)
+	}
+}
+
+type fakeWorkerTunnel struct {
+	endpoint string
+	closed   atomic.Int32
+}
+
+func (t *fakeWorkerTunnel) Endpoint() string { return t.endpoint }
+func (t *fakeWorkerTunnel) Close() error     { t.closed.Add(1); return nil }
+
+func TestOpenWorkerTunnelsUsesOnlyLoopbackAndCleansPartialFailure(t *testing.T) {
+	first := &fakeWorkerTunnel{endpoint: "127.0.0.1:41001"}
+	calls := 0
+	gateway := &gateway{ctx: context.Background(), cfg: gatewayConfig{tunnelFactory: func(_ context.Context, node placement.Node) (workerTunnel, error) {
+		calls++
+		if calls == 1 {
+			return first, nil
+		}
+		return nil, fmt.Errorf("dial failed")
+	}}}
+	plan := placement.Plan{Nodes: []placement.Node{{Hostname: "alpha", AgentAddress: "100.64.0.1:7420"}, {Hostname: "beta", AgentAddress: "100.64.0.2:7420"}}}
+	if _, _, err := gateway.openWorkerTunnels(plan); err == nil {
+		t.Fatal("openWorkerTunnels succeeded after partial failure")
+	}
+	if first.closed.Load() != 1 {
+		t.Fatalf("first tunnel closed %d times, want once", first.closed.Load())
+	}
+}
+
+func TestOpenWorkerTunnelsRejectsNonLoopbackEndpoint(t *testing.T) {
+	insecure := &fakeWorkerTunnel{endpoint: "100.64.0.1:50052"}
+	gateway := &gateway{ctx: context.Background(), cfg: gatewayConfig{tunnelFactory: func(context.Context, placement.Node) (workerTunnel, error) {
+		return insecure, nil
+	}}}
+	plan := placement.Plan{Nodes: []placement.Node{{Hostname: "alpha", AgentAddress: "100.64.0.1:7420"}}}
+	if _, _, err := gateway.openWorkerTunnels(plan); err == nil {
+		t.Fatal("non-loopback tunnel endpoint was accepted")
+	}
+	if insecure.closed.Load() != 1 {
+		t.Fatal("rejected tunnel was not closed")
+	}
+}
+
+func TestModelWorkerClosesTunnelsOnce(t *testing.T) {
+	tunnel := &fakeWorkerTunnel{endpoint: "127.0.0.1:41001"}
+	worker := &modelWorker{tunnels: []workerTunnel{tunnel}}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() { defer wg.Done(); worker.closeTunnels() }()
+	}
+	wg.Wait()
+	if tunnel.closed.Load() != 1 {
+		t.Fatalf("tunnel closed %d times, want once", tunnel.closed.Load())
+	}
+}
+
+func TestLocalAgentTunnelOpensFreshStreamPerSocketAndCleansUp(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var dials atomic.Int32
+	var peersMu sync.Mutex
+	var peers []net.Conn
+	tunnel := &localAgentTunnel{
+		listener:     listener,
+		agentAddress: "paired-agent:7420",
+		ctx:          ctx,
+		cancel:       cancel,
+		pairs:        make(map[*tunnelPair]struct{}),
+		dialRPC: func(context.Context, string) (net.Conn, error) {
+			tunnelSide, peerSide := net.Pipe()
+			peersMu.Lock()
+			peers = append(peers, peerSide)
+			peersMu.Unlock()
+			dials.Add(1)
+			return tunnelSide, nil
+		},
+	}
+	tunnel.wg.Add(1)
+	go tunnel.accept()
+	clients := make([]net.Conn, 0, 2)
+	for range 2 {
+		connection, err := net.Dial("tcp", tunnel.Endpoint())
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients = append(clients, connection)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for dials.Load() != 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if dials.Load() != 2 {
+		t.Fatalf("remote CONNECT dials = %d, want one per local socket", dials.Load())
+	}
+	if err := tunnel.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, connection := range clients {
+		_ = connection.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, err := connection.Read(make([]byte, 1)); err == nil {
+			t.Fatal("local llama socket remained open after tunnel shutdown")
+		}
+		_ = connection.Close()
+	}
+	peersMu.Lock()
+	defer peersMu.Unlock()
+	for _, connection := range peers {
+		_ = connection.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, err := connection.Read(make([]byte, 1)); err == nil {
+			t.Fatal("remote CONNECT stream remained open after tunnel shutdown")
+		}
+		_ = connection.Close()
 	}
 }

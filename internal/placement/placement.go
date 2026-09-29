@@ -23,11 +23,12 @@ import (
 	"sort"
 )
 
-// Node is a GPU contributor observed by the Orchestrator. Endpoint is empty
-// for the Orchestrator's own CUDA backend; a remote node has an RPC endpoint.
+// Node is a GPU contributor observed by the Orchestrator. AgentAddress is
+// empty for the local backend; remote nodes carry only their mTLS Agent
+// control address, never a raw llama.cpp RPC endpoint.
 type Node struct {
 	Hostname     string
-	Endpoint     string
+	AgentAddress string
 	Local        bool
 	Device       string
 	GPUFreeBytes []int64

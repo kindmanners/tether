@@ -100,7 +100,7 @@ function renderNodes(nodes) {
   for (const node of nodes) {
     const row = document.createElement("tr");
     const status = String(node.status || "unknown");
-    const endpoint = node.tailscaleIP && node.rpcPort ? `${node.tailscaleIP}:${node.rpcPort}` : "Not reported";
+    const endpoint = node.rpcPort ? `TCP ${node.rpcPort}` : "Not reported";
     const agentPort = node.agentPort ? `TCP ${node.agentPort}` : "Port not reported";
     const agent = node.agentStatus || agentPort;
     const role = node.isOrchestrator ? '<span class="node-role">Orchestrator</span>' : "";

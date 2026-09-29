@@ -16,13 +16,16 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -42,6 +45,7 @@ type StatusResult struct {
 // bootstrap exchange).
 type Client struct {
 	httpClient *http.Client
+	tlsConfig  *tls.Config
 }
 
 // NewClient creates a Client that will verify the Agent's certificate
@@ -50,12 +54,71 @@ type Client struct {
 // every command is checked against the specific cert pinned during
 // pairing with that Agent, not just any TLS-presenting server.
 func NewClient(tlsConfig *tls.Config) *Client {
+	clientTLS := tlsConfig.Clone()
+	clientTLS.NextProtos = []string{"http/1.1"}
 	return &Client{
 		httpClient: &http.Client{
-			Transport: &http.Transport{TLSClientConfig: tlsConfig},
+			Transport: &http.Transport{TLSClientConfig: clientTLS},
 			Timeout:   clientTimeout,
 		},
+		tlsConfig: clientTLS,
 	}
+}
+
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+// DialRPC opens one raw llama.cpp RPC stream through the Agent's HTTP/1.1
+// CONNECT endpoint. Setup is bounded, but successful streams have no deadline.
+func (c *Client) DialRPC(ctx context.Context, addr string) (net.Conn, error) {
+	if c.tlsConfig == nil {
+		return nil, fmt.Errorf("RPC dialing requires a pinned TLS configuration")
+	}
+	setupCtx, cancel := context.WithTimeout(ctx, rpcConnectTimeout)
+	defer cancel()
+	tlsConfig := c.tlsConfig.Clone()
+	tlsConfig.NextProtos = []string{"http/1.1"}
+	conn, err := (&tls.Dialer{Config: tlsConfig}).DialContext(setupCtx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("connecting to Agent %s: %w", addr, err)
+	}
+	fail := func(err error) (net.Conn, error) {
+		_ = conn.Close()
+		return nil, err
+	}
+	deadline := time.Now().Add(rpcConnectTimeout)
+	if actual, ok := setupCtx.Deadline(); ok && actual.Before(deadline) {
+		deadline = actual
+	}
+	_ = conn.SetDeadline(deadline)
+	stopCancel := context.AfterFunc(setupCtx, func() { _ = conn.SetDeadline(time.Now()) })
+	request := &http.Request{Method: http.MethodConnect, URL: &url.URL{Path: "/rpc"}, Host: "tether-agent"}
+	if err := request.Write(conn); err != nil {
+		stopCancel()
+		return fail(fmt.Errorf("sending RPC CONNECT request: %w", err))
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, request)
+	stopCancel()
+	if err != nil {
+		return fail(fmt.Errorf("reading RPC CONNECT response: %w", err))
+	}
+	if response.StatusCode != http.StatusOK {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		_ = response.Body.Close()
+		return fail(fmt.Errorf("agent rejected RPC CONNECT with %s: %s", response.Status, bytes.TrimSpace(message)))
+	}
+	if err := setupCtx.Err(); err != nil {
+		return fail(fmt.Errorf("establishing RPC CONNECT: %w", err))
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fail(fmt.Errorf("clearing RPC stream deadline: %w", err))
+	}
+	return &bufferedConn{Conn: conn, reader: reader}, nil
 }
 
 // StartRPCServer requests addr's Agent start its ggml-rpc-server on port.

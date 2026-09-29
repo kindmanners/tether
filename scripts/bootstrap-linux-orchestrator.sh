@@ -24,7 +24,7 @@ INSTALL_MISSING=0
 LOCAL_GPU=0
 PROGRESS_PATH=""
 LLAMA_CPP_PATH=""
-LLAMA_CPP_REVISION="3057bb66c86c46d5781e50e85462a760ba7d1feb"
+LLAMA_CPP_REVISION=""
 
 usage() {
   printf '%s\n' 'Usage: bootstrap-linux-orchestrator.sh [--install-missing] [--local-gpu] [--llama-cpp-path PATH] [--progress-path PATH]'
@@ -42,6 +42,8 @@ while (($#)); do
   esac
   shift
 done
+
+[[ "$LLAMA_CPP_REVISION" =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' '--llama-cpp-revision with an explicitly reviewed lowercase 40-character SHA is required.' >&2; exit 2; }
 
 # Arch's cuda package deliberately exposes nvcc through /etc/profile.d/cuda.sh.
 # This provisioner is also invoked by the desktop app through a non-login

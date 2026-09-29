@@ -18,7 +18,8 @@ The node must be online in the Tailnet and appear in that allowlist.
    online allowlisted node, and enter that code.
 4. After the certificate exchange succeeds, the Orchestrator pins the Agent's
    certificate and the Agent pins the Orchestrator's certificate. Later
-   control traffic uses mTLS.
+   control and RPC tunnel traffic uses those exact pins. A different or
+   rotated certificate is rejected until explicit re-pairing.
 
 ## Monitor and control the RPC server
 
@@ -29,7 +30,16 @@ latest check time, and round-trip latency.
 For an online paired node, select **Start RPC** to start its local
 `ggml-rpc-server`, or **Stop RPC** to stop it. **Start RPC** is unavailable
 while that server is already running. The RPC server exposes GPU capacity; it
-does not load a model. Load models through the Orchestrator or `tether-api`.
+does not load a model and listens only on `127.0.0.1`. Load models through the
+Orchestrator or `tether-api`; remote data uses bounded HTTP/1.1 CONNECT streams
+on the paired mTLS Agent port.
+
+An Agent admits at most eight establishing or active RPC streams for one peer
+certificate and at most sixteen streams in total. Establishment is bounded by
+timeouts. Once a valid stream is established, Tether applies no idle or read
+deadline because llama.cpp RPC connections may legitimately remain quiet for
+long periods. Stopping the managed RPC process or shutting down either Tether
+side closes the associated streams.
 
 ## Re-pair an Agent
 
@@ -41,7 +51,7 @@ one-time code.
 
 ## Local Agent configuration
 
-The GPU-node operator, not the Orchestrator, chooses the RPC executable and
-bind address. See [Configuration](configuration.md#agent-configuration) for
+The GPU-node operator, not the Orchestrator, chooses the RPC executable. Tether
+fixes its bind address to `127.0.0.1`. See [Configuration](configuration.md#agent-configuration) for
 the local `agent_config.yaml` format and [Network policy](configuration.md#network-policy)
 for the required Tailnet restrictions.

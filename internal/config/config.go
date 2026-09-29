@@ -92,8 +92,8 @@ func (c *Config) validate() error {
 		return fmt.Errorf("rpc_server_path %q is a directory, not an executable file", c.RPCServerPath)
 	}
 
-	if c.RPCListenHost == "" {
-		return fmt.Errorf("rpc_listen_host is required")
+	if c.RPCListenHost != "127.0.0.1" {
+		return fmt.Errorf("rpc_listen_host must be 127.0.0.1; remote RPC is carried through Tether's mTLS Agent connection")
 	}
 
 	return nil

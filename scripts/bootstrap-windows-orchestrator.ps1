@@ -32,11 +32,12 @@ param(
     [string]$LlamaCppPath,
     [string]$ProgressPath,
     [string]$MinimumCudaVersion = '12.0',
-    [string]$LlamaCppRevision = '3057bb66c86c46d5781e50e85462a760ba7d1feb'
+    [Parameter(Mandatory=$true)][string]$LlamaCppRevision
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($LlamaCppRevision -notmatch '^[0-9a-f]{40}$') { throw 'LlamaCppRevision must be an explicitly reviewed lowercase 40-character SHA.' }
 
 function Write-SetupProgress {
     param([string]$Step, [string]$Detail)
