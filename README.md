@@ -63,10 +63,13 @@ Apple Metal workers are not supported by the managed setup flows.
 Follow the Windows or Linux bootstrap guide because their driver, compiler,
 and CUDA prerequisites differ.
 
-- Distributed RPC pools GPU memory so a model that does not fit on one GPU can
-  use several machines. It is a way to run a bigger model, not a way to make a
-  model faster. Network transfer and RPC coordination can increase latency and
-  reduce throughput compared with a model that fits on one local GPU.
+- Distributed RPC primarily pools GPU memory so a model that does not fit on
+  one GPU can use several machines. It is not an automatic speedup: a model
+  that already fits on one local GPU will usually pay network and coordination
+  overhead. When the alternative spills layers to CPU, however, remote GPU
+  offload can improve throughput substantially; one historical 14B benchmark
+  measured roughly double the prompt and generation throughput. See the
+  [performance expectation and benchmark](docs/placement.md#performance-expectations).
 - Tether reduces RPC network exposure but is not a sandbox. Paired nodes and
   localhost processes are trusted, and a malicious authenticated peer can
   still send malicious llama.cpp RPC data.
