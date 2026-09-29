@@ -15,9 +15,13 @@ Tether builds four binaries:
 | `tether-api` | A local OpenAI-compatible gateway for Tether-managed model workers. |
 | `tether-dashboard` | An independent, read-only browser dashboard for the cluster. |
 
-The Agent control channel uses exact certificate-pinned mTLS. Tether carries
-llama.cpp RPC data through HTTP/1.1 CONNECT streams on that same authenticated
-Agent port; `ggml-rpc-server` itself binds only to `127.0.0.1`. See the
+The Agent control channel uses exact certificate-pinned mTLS. Tether now also
+secures the inter-node RPC path used by `llama-server` with that pinned mTLS
+connection: `llama-server` receives only Tether-owned `127.0.0.1` tunnel
+addresses, and Tether carries each RPC connection through an HTTP/1.1 CONNECT
+stream on the authenticated Agent port. The managed `ggml-rpc-server` also
+binds only to `127.0.0.1`, so its raw RPC port is never exposed to the Tailnet,
+LAN, or internet. See the
 [network-policy guidance](docs/configuration.md#network-policy).
 
 This containment reduces network exposure; it does not make llama.cpp's RPC
