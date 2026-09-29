@@ -29,11 +29,23 @@ The default KV-cache reserve is 256 KiB per context token. Tune those
 conservatively with `--model-overhead` and `--kv-cache-bytes-per-token` when
 your workload has measured requirements.
 
+Model loading is serialized across the gateway so concurrent launches cannot
+be admitted against the same stale VRAM snapshot. Requests for workers that
+are already loaded continue while another model is loading. Whole-model local
+placements are pinned to the selected CUDA device; local CUDA devices are
+hidden when a plan uses only remote GPUs.
+
 ## Worker lifecycle
 
 Each loaded model owns a llama.cpp worker. The gateway starts a worker on its
 selected placement, waits up to five minutes by default for it to become
 healthy, and routes requests through the OpenAI-compatible endpoint.
+
+Tether watches each worker during startup and while it is serving. An
+unexpected exit removes the worker from the active set and records it as
+crashed so a later request can start a replacement. Linux workers receive a
+parent-death signal, while Windows workers run in a kill-on-close Job Object,
+reducing the chance that a worker survives a gateway crash or forced shutdown.
 
 An idle worker is unloaded after five minutes by default, freeing its GPU
 allocation for later placement decisions. Configure this with `--idle-unload`:
