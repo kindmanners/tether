@@ -60,20 +60,20 @@ func parseAgentSelection(value string) (agentSelection, error) {
 	case "auto":
 		return agentSelection{mode: agentsAuto}, nil
 	case "":
-		return agentSelection{}, fmt.Errorf("Agent selection must be auto, none, or comma-separated paired Agent hostnames")
+		return agentSelection{}, fmt.Errorf("agent selection must be auto, none, or comma-separated paired Agent hostnames")
 	}
 	parts := strings.Split(value, ",")
 	seen := make(map[string]bool, len(parts))
 	for i, part := range parts {
 		hostname := strings.TrimSpace(part)
 		if hostname == "" {
-			return agentSelection{}, fmt.Errorf("Agent selection contains an empty hostname")
+			return agentSelection{}, fmt.Errorf("agent selection contains an empty hostname")
 		}
 		if strings.EqualFold(hostname, "auto") || strings.EqualFold(hostname, "none") || strings.ContainsAny(hostname, ":[]/") {
 			return agentSelection{}, fmt.Errorf("%q is not an Agent hostname; replace legacy host:port RPC endpoints with paired Agent hostnames", hostname)
 		}
 		if seen[hostname] {
-			return agentSelection{}, fmt.Errorf("Agent hostname %q is duplicated", hostname)
+			return agentSelection{}, fmt.Errorf("agent hostname %q is duplicated", hostname)
 		}
 		seen[hostname] = true
 		parts[i] = hostname

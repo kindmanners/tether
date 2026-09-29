@@ -110,7 +110,7 @@ func (c *Client) DialRPC(ctx context.Context, addr string) (net.Conn, error) {
 	if response.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		_ = response.Body.Close()
-		return fail(fmt.Errorf("Agent rejected RPC CONNECT with %s: %s", response.Status, bytes.TrimSpace(message)))
+		return fail(fmt.Errorf("agent rejected RPC CONNECT with %s: %s", response.Status, bytes.TrimSpace(message)))
 	}
 	if err := setupCtx.Err(); err != nil {
 		return fail(fmt.Errorf("establishing RPC CONNECT: %w", err))
