@@ -15,60 +15,24 @@ Tether builds four binaries:
 | `tether-api` | A local OpenAI-compatible gateway for Tether-managed model workers. |
 | `tether-dashboard` | An independent, read-only browser dashboard for the cluster. |
 
-The Agent control channel uses exact certificate-pinned mTLS. Tether carries
-llama.cpp RPC data through HTTP/1.1 CONNECT streams on that same authenticated
-Agent port; `ggml-rpc-server` itself binds only to `127.0.0.1`. See the
+The Agent control channel uses exact certificate-pinned mTLS. Tether now also
+secures the inter-node RPC path used by `llama-server` with that pinned mTLS
+connection: `llama-server` receives only Tether-owned `127.0.0.1` tunnel
+addresses, and Tether carries each RPC connection through an HTTP/1.1 CONNECT
+stream on the authenticated Agent port. The managed `ggml-rpc-server` also
+binds only to `127.0.0.1`, so its raw RPC port is never exposed to the Tailnet,
+LAN, or internet. See the
 [network-policy guidance](docs/configuration.md#network-policy).
 
 This containment reduces network exposure; it does not make llama.cpp's RPC
 backend intrinsically safe. Tether assumes the paired Orchestrator, paired
 Agents, and local processes on those machines are trusted peers.
 
-## Build
-
-Install Go 1.27 or later and the platform dependencies required by Wails. The
-desktop applications embed their checked-in web assets, so Node.js is not
-required to build them.
-
-```bash
-go build -tags production -o bin/tether ./cmd/tether
-go build -tags production -o bin/tether-agent ./cmd/tether-agent
-go build -o bin/tether-api ./cmd/tether-api
-go build -o bin/tether-dashboard ./cmd/tether-dashboard
-```
-
-On Windows, use the release script to build all four binaries. The two desktop
-applications include the WebView2 bootstrapper:
-
-```powershell
-.\scripts\build-windows-release.ps1
-```
-
-Keep `tether-api` beside `tether` in a packaged installation. The desktop
-Orchestrator starts it as a sibling process and exposes the local endpoint at
-`http://127.0.0.1:11435/v1`. The desktop generates a fresh API key for each
-run and displays it beside the endpoint; configure clients to send that key as
-an OpenAI Bearer token.
-
-### llama.cpp revision policy
-
-Tether uses upstream llama.cpp without a fork. The exact reviewed commit in
-[`scripts/llama-cpp-revision.txt`](scripts/llama-cpp-revision.txt) is the sole
-source of truth for repository-managed builds. Desktop setup embeds and passes
-that SHA to the bootstrap scripts; standalone bootstrap use must provide an
-explicit reviewed SHA and never falls back to upstream `HEAD`.
-
-The weekly and manually triggered
-[`Check llama.cpp pin`](.github/workflows/llama-cpp-pin.yml) workflow only
-checks whether the pin is stale. It creates or updates one GitHub issue
-containing the latest upstream build tag and SHA, and closes that issue when
-the pin is current. It never edits the revision file, rebuilds binaries, opens
-or merges a pull request, or publishes a release. Updating llama.cpp always
-requires human compatibility and security review.
-
 ## Quick start
 
-1. Build the Orchestrator and Agent, then prepare each GPU node with the
+1. Build the four Tether binaries by following the
+   [contributor build instructions](CONTRIBUTING.md#build-and-test), then
+   prepare each GPU node with the
    appropriate [Windows](docs/windows-gpu-node-bootstrap.md) or
    [Linux](docs/linux-gpu-node-bootstrap.md) guide.
 2. Add the node's Tailnet hostname and ports to
@@ -82,65 +46,35 @@ requires human compatibility and security review.
    then copy the displayed endpoint and API key into your OpenAI-compatible
    client.
 
-See [Operating Agents](docs/agent-operations.md) for the complete GUI flow.
+See [Operating Agents](docs/agent-operations.md) for the complete GUI flow and
+[OpenAI API gateway](docs/openai-api.md) for client and standalone gateway
+configuration.
 
-## OpenAI-compatible gateway
+## Limits
 
-Every `tether-api` request requires an API key, including requests from the
-local machine. The desktop supplies its generated key to the gateway through
-the process environment. For a standalone launch, set `TETHER_API_KEY` or pass
-`--api-key` explicitly:
+Tether currently supports NVIDIA GPUs through CUDA. AMD/ROCm, Intel GPU, and
+Apple Metal workers are not supported by the managed setup flows.
 
-```bash
-TETHER_API_KEY="replace-with-a-strong-random-token" \
-  tether-api --listen 127.0.0.1:11435 --agents auto
-```
+| Role | Windows | Linux | macOS |
+| --- | --- | --- | --- |
+| Orchestrator | Supported | Supported | Not supported |
+| NVIDIA/CUDA GPU Agent | Supported | Supported | Not supported |
 
-The gateway currently provides `GET /v1/models` and
-`POST /v1/chat/completions`. Streaming chat responses are flushed as SSE data
-arrives, so clients such as Open WebUI receive tokens without proxy buffering.
-The gateway removes client authorization and cookie headers before proxying a
-request and authenticates each private llama.cpp worker separately.
+Follow the Windows or Linux bootstrap guide because their driver, compiler,
+and CUDA prerequisites differ.
 
-Model loading is serialized across the gateway so concurrent requests cannot
-be admitted against the same stale VRAM snapshot. Requests for workers that
-are already loaded continue normally during another model load. Tether watches
-worker processes during startup and while serving; an unexpected exit removes
-the worker from the active set and records it as crashed so the next request
-can start a replacement.
-
-The model library accepts ordinary `.gguf` files and split sets named like
-`model-00001-of-00005.gguf`. Split files appear as one model and their complete
-size is used for placement. `mmproj*.gguf` projector files are not registered
-as standalone language models. Automatic placement pins whole-model local
-loads to the selected CUDA device and hides local CUDA devices when the plan
-uses remote GPUs only.
-
-The gateway validates request hosts and browser origins in addition to its
-Bearer token. On Linux, worker processes use a parent-death signal; on Windows,
-they run in a kill-on-close Job Object. These safeguards prevent model workers
-from being left behind after a gateway crash or forced shutdown.
-
-The independent browser dashboard needs the same API key to include live model
-worker state. Prefer the environment variable so the credential does not appear
-in process listings:
-
-```bash
-TETHER_API_KEY="the-key-shown-by-tether" tether-dashboard
-```
-
-For environments where setting an environment variable is inconvenient,
-`tether-dashboard --api-key <key>` provides the equivalent authenticated
-request. Node and model inventory remain available when the gateway is down;
-the dashboard displays the model-state connection or authentication error.
-
-The dashboard embeds its browser assets and can be run from any working
-directory. It deliberately accepts only loopback listen addresses and rejects
-non-local Host/Origin values because its inventory endpoint contains cluster
-topology and hardware details. Use the default `127.0.0.1:8080`; remote access
-should be provided through a separately authenticated local proxy. The
-`--static-dir` option is only an explicit development override for the embedded
-assets.
+- Distributed RPC primarily pools GPU memory so a model that does not fit on
+  one GPU can use several machines. It is not an automatic speedup: a model
+  that already fits on one local GPU will usually pay network and coordination
+  overhead. When the alternative spills layers to CPU, however, remote GPU
+  offload can improve throughput substantially; one historical 14B benchmark
+  measured roughly double the prompt and generation throughput. See the
+  [performance expectation and benchmark](docs/placement.md#performance-expectations).
+- Tether reduces RPC network exposure but is not a sandbox. Paired nodes and
+  localhost processes are trusted, and a malicious authenticated peer can
+  still send malicious llama.cpp RPC data.
+- Model compatibility and inference behavior ultimately depend on the pinned
+  upstream llama.cpp revision. Updating that revision requires human review.
 
 ## Documentation
 

@@ -61,3 +61,33 @@ listeners to trusted Tailnet or LAN clients.
 The gateway keeps one worker per loaded model. By default it unloads an idle
 worker after five minutes. Use `--idle-unload 0` to disable that behaviour, or
 adjust it with a Go duration such as `--idle-unload 15m`.
+
+## API and model-library behavior
+
+Streaming chat responses are flushed as SSE data arrives, so clients receive
+tokens without proxy buffering. Before proxying a request, the gateway removes
+client authorization and cookie headers and authenticates the private
+llama.cpp worker with a separate credential. It also validates request hosts
+and browser origins in addition to requiring the Bearer token.
+
+The model library accepts ordinary `.gguf` files and split sets named like
+`model-00001-of-00005.gguf`. A split set appears as one model and its complete
+size is used for placement. `mmproj*.gguf` projector files are not registered
+as standalone language models.
+
+## Dashboard
+
+The independent `tether-dashboard` uses the same API key to include live model
+worker state. Prefer the environment variable so the credential does not
+appear in process listings:
+
+```bash
+TETHER_API_KEY="the-key-shown-by-tether" tether-dashboard
+```
+
+The dashboard accepts only loopback listen addresses and rejects non-local
+Host and Origin values because its inventory contains cluster topology and
+hardware details. Use the default `127.0.0.1:8080`; provide remote access only
+through a separately authenticated local proxy. Node inventory remains
+available if the gateway is down, while model state reports the connection or
+authentication error.

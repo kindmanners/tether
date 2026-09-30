@@ -113,3 +113,19 @@ rule for `rpc_port`; Tether's Windows setup removes its obsolete RPC rule.
 Paired nodes are trusted peers: mTLS prevents arbitrary network clients from
 reaching RPC, but it does not sanitize RPC messages, sandbox llama.cpp, or
 protect against malicious authenticated peers or hostile localhost processes.
+
+## llama.cpp revision management
+
+Tether uses upstream llama.cpp without a fork. The exact reviewed commit in
+[`scripts/llama-cpp-revision.txt`](../scripts/llama-cpp-revision.txt) is the
+sole source of truth for repository-managed builds. Desktop setup embeds and
+passes that SHA to the bootstrap scripts. Standalone bootstrap use requires an
+explicit reviewed SHA and never falls back to upstream `HEAD`.
+
+The weekly and manually triggered
+[`Check llama.cpp pin`](../.github/workflows/llama-cpp-pin.yml) workflow only
+checks whether the pin is stale. It creates or updates one GitHub issue with
+the latest upstream build tag and SHA, and closes that issue when the pin is
+current. It never edits the revision file, rebuilds binaries, creates or merges
+a pull request, or publishes a release. Updating llama.cpp requires human
+compatibility and security review.
