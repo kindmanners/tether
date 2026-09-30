@@ -10,6 +10,7 @@ detail.
 | [Operating Agents](agent-operations.md) | pair a GPU node and manage its RPC server from the desktop apps |
 | [OpenAI API gateway](openai-api.md) | connect an OpenAI-compatible client to `tether-api` |
 | [Placement and model lifecycle](placement.md) | understand RPC selection, capacity admission, and idle unloading |
+| [Two-node acceptance test](acceptance-test.md) | qualify a release candidate on real GPU nodes and capture sanitized evidence |
 | [Windows GPU-node bootstrap](windows-gpu-node-bootstrap.md) | prepare a Windows node for CUDA RPC inference |
 | [Linux GPU-node bootstrap](linux-gpu-node-bootstrap.md) | prepare a Linux node for CUDA RPC inference |
 | [Security policy](../SECURITY.md) | understand RPC trust boundaries or report a vulnerability privately |
