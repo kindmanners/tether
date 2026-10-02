@@ -19,8 +19,10 @@ const api = () => window.go?.main?.OrchestratorApp;
 const nodes = document.querySelector('#nodes');
 const modelGrid = document.querySelector('#models');
 const notice = document.querySelector('#notice');
-const dialog = document.querySelector('#pair-dialog');
+const pairingDialog = document.querySelector('#pair-dialog');
 const addDialog = document.querySelector('#add-dialog');
+const modelPlanDialog = document.querySelector('#model-plan-dialog');
+const safetyDialog = document.querySelector('#safety-dialog');
 let pairingHost = '';
 let preparationRefresh;
 let telemetryRefresh;
@@ -114,6 +116,58 @@ function formatBytes(value) {
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const amount = bytes / (1024 ** exponent);
   return `${amount >= 10 || exponent === 0 ? Math.round(amount) : amount.toFixed(1)} ${units[exponent]}`;
+}
+
+function awaitDecision(dialogElement) {
+  dialogElement.returnValue = '';
+  return new Promise(resolve => {
+    dialogElement.addEventListener('close', () => resolve(dialogElement.returnValue === 'confirm'), { once: true });
+    dialogElement.showModal();
+  });
+}
+
+function formatObservedAt(value) {
+  if (!value) return 'Just now';
+  const observedAt = new Date(value);
+  return Number.isNaN(observedAt.getTime()) ? 'Just now' : observedAt.toLocaleTimeString();
+}
+
+async function confirmModelPlan(plan) {
+  const placementNodes = Array.isArray(plan.nodes) && plan.nodes.length ? plan.nodes.join(' + ') : 'No GPU nodes';
+  document.querySelector('#model-plan-name').textContent = plan.model || 'this model';
+  document.querySelector('#model-plan-size').textContent = formatBytes(plan.sizeBytes);
+  document.querySelector('#model-plan-reserve').textContent = formatBytes(plan.reserveBytes);
+  document.querySelector('#model-plan-model-reserve').textContent = formatBytes(plan.modelReserveBytes);
+  document.querySelector('#model-plan-kv-cache').textContent = formatBytes(plan.kvCacheBytes);
+  document.querySelector('#model-plan-placement').textContent = `${plan.mode || 'Selected'} · ${placementNodes}`;
+  document.querySelector('#model-plan-observed').textContent = formatObservedAt(plan.observedAt);
+  document.querySelector('#model-plan-detail').textContent = plan.detail || 'Capacity is checked again when loading starts.';
+  return { confirmed: await awaitDecision(modelPlanDialog), placementNodes };
+}
+
+function renderDialogFacts(container, facts) {
+  container.replaceChildren(...facts.map(({ label, value, wide = false }) => {
+    const row = document.createElement('div');
+    if (wide) row.className = 'wide';
+    const term = document.createElement('dt');
+    const description = document.createElement('dd');
+    term.textContent = label;
+    description.textContent = value;
+    row.append(term, description);
+    return row;
+  }));
+}
+
+async function confirmSafetyAction({ eyebrow = 'Review action', title, summary, facts, note, confirmLabel, caution = false }) {
+  document.querySelector('#safety-eyebrow').textContent = eyebrow;
+  document.querySelector('#safety-title').textContent = title;
+  document.querySelector('#safety-summary').textContent = summary;
+  document.querySelector('#safety-note').textContent = note;
+  renderDialogFacts(document.querySelector('#safety-facts'), facts);
+  const confirmButton = document.querySelector('#confirm-safety');
+  confirmButton.textContent = confirmLabel;
+  confirmButton.classList.toggle('caution', caution);
+  return awaitDecision(safetyDialog);
 }
 
 function renderModel(model) {
@@ -268,7 +322,7 @@ nodes.addEventListener('click', async event => {
   if (pairingHost) {
     document.querySelector('#pair-title').textContent = pairingHost;
     document.querySelector('#pair-code').value = '';
-    dialog.showModal();
+    pairingDialog.showModal();
     return;
   }
   try {
@@ -289,13 +343,11 @@ modelGrid.addEventListener('click', async event => {
   try {
     button.disabled = true;
     if (button.dataset.loadModel) {
-      report(`Loading ${button.dataset.loadModel} across the available GPUs…`);
+      report(`Checking placement for ${button.dataset.loadModel}…`);
       const plan = await api().ModelPlan(button.dataset.loadModel);
-      const nodes = Array.isArray(plan.nodes) && plan.nodes.length ? plan.nodes.join(' + ') : 'no GPU nodes';
-      const observedAt = plan.observedAt ? new Date(plan.observedAt).toLocaleTimeString() : 'just now';
-      const confirmed = window.confirm(`Load ${plan.model}?\n\nModel file: ${formatBytes(plan.sizeBytes)}\nRuntime reservation: ${formatBytes(plan.reserveBytes)} (model ${formatBytes(plan.modelReserveBytes)} + KV cache ${formatBytes(plan.kvCacheBytes)})\nPlacement: ${plan.mode} across ${nodes}\nCapacity sampled: ${observedAt}\nStartup allowance: up to 5 minutes\n\n${plan.detail || 'Capacity is checked again when loading starts.'}`);
+      const { confirmed, placementNodes } = await confirmModelPlan(plan);
       if (!confirmed) { button.disabled = false; report('Model load cancelled.'); return; }
-      report(`Loading ${button.dataset.loadModel} across ${nodes}...`);
+      report(`Loading ${button.dataset.loadModel} across ${placementNodes}…`);
       await api().LoadModel(button.dataset.loadModel);
     }
     if (button.dataset.unloadModel) {
@@ -313,7 +365,7 @@ document.querySelector('#confirm-pair').addEventListener('click', async event =>
   event.preventDefault();
   try {
     await api().Pair(pairingHost, document.querySelector('#pair-code').value.trim());
-    dialog.close();
+    pairingDialog.close();
 	celebratingHost = pairingHost;
 	report(`${pairingHost} paired securely. Control is now enabled.`);
     await refresh();
@@ -350,7 +402,19 @@ async function startModelDownload() {
 	const destination = latestLibrary?.directory || 'the local model library';
 	const expected = formatBytes(12109566624);
 	const required = formatBytes(12109566624 + 1024 ** 3);
-	const confirmed = window.confirm(`Download gpt-oss-20b-MXFP4.gguf?\n\nSource: Hugging Face (ggml-org, pinned revision)\nSize: ${expected}\nDestination: ${destination}\nFree-space requirement: at least ${required} (includes 1 GiB working headroom)\n\nThe download is SHA-256 verified before installation. You can cancel and later resume it.`);
+	const confirmed = await confirmSafetyAction({
+		eyebrow: 'Download review',
+		title: 'Download gpt-oss-20b?',
+		summary: 'Tether will download the pinned GGUF model into the local model library.',
+		facts: [
+			{ label: 'Source', value: 'Hugging Face · ggml-org pinned revision', wide: true },
+			{ label: 'Download size', value: expected },
+			{ label: 'Disk space needed', value: required },
+			{ label: 'Destination', value: destination, wide: true },
+		],
+		note: 'The download is SHA-256 verified before installation. You can cancel it and resume later.',
+		confirmLabel: 'Start download',
+	});
 	if (!confirmed) return;
   try {
     await api().DownloadGPTOSS20B();
@@ -402,8 +466,18 @@ document.querySelector('#toggle-local-gpu').addEventListener('click', async () =
     const enabled = document.querySelector('#toggle-local-gpu').getAttribute('aria-pressed') !== 'true';
 	const activeModels = (latestLibrary?.models || []).filter(model => ['loaded', 'loading', 'idle-countdown', 'unloading'].includes(model.state)).map(model => model.id);
 	if (latestState?.gateway?.running) {
-		const affected = activeModels.length ? `Active models: ${activeModels.join(', ')}.` : 'The gateway has no loaded models, but active inference requests may still be interrupted.';
-		const confirmed = window.confirm(`Changing this GPU role restarts the local gateway and stops active inference.\n\n${affected}\n\nContinue?`);
+		const confirmed = await confirmSafetyAction({
+			eyebrow: 'Service interruption',
+			title: 'Restart the gateway?',
+			summary: 'Changing this Orchestrator’s GPU role restarts the local gateway and interrupts active inference.',
+			facts: [
+				{ label: 'New role', value: enabled ? 'Contribute this GPU' : 'Control-only mode' },
+				{ label: 'Active models', value: activeModels.length ? activeModels.join(', ') : 'None reported', wide: true },
+			],
+			note: activeModels.length ? 'Loaded models will stop and must be loaded again after the gateway restarts.' : 'The gateway has no loaded models, but active requests may still be interrupted.',
+			confirmLabel: 'Restart and change role',
+			caution: true,
+		});
 		if (!confirmed) return;
 	}
     report('Updating this Orchestrator’s GPU role…');

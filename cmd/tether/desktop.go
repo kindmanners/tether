@@ -84,6 +84,14 @@ const (
 	maxConcurrentNodeProbes       = 4
 )
 
+// exampleNodeHostnames are the sample entries distributed with the source
+// tree. They make an unconfigured development checkout legible, but must not
+// remain in an operator's allowlist once they add a real Tailnet node.
+var exampleNodeHostnames = map[string]struct{}{
+	"=examples":  {},
+	"examplesv2": {},
+}
+
 type OrchestratorSnapshot struct {
 	AllowlistPath      string        `json:"allowlistPath"`
 	ContributeLocalGPU bool          `json:"contributeLocalGPU"`
@@ -606,7 +614,7 @@ func (a *OrchestratorApp) AddNode(hostname string, rpcPort int) error {
 	if !found {
 		return fmt.Errorf("%s is not an online unallowlisted Tailnet peer", hostname)
 	}
-	allowlist.Nodes = append(allowlist.Nodes, registry.AllowlistEntry{Hostname: hostname, Role: "rpc-node", AgentPort: defaultAgentPort, RPCPort: rpcPort})
+	allowlist.Nodes = append(realAllowlistEntries(allowlist.Nodes), registry.AllowlistEntry{Hostname: hostname, Role: "rpc-node", AgentPort: defaultAgentPort, RPCPort: rpcPort})
 	data, err := yaml.Marshal(allowlist)
 	if err != nil {
 		return fmt.Errorf("encoding node allowlist: %w", err)
@@ -615,6 +623,19 @@ func (a *OrchestratorApp) AddNode(hostname string, rpcPort int) error {
 		return fmt.Errorf("writing node allowlist: %w", err)
 	}
 	return nil
+}
+
+// realAllowlistEntries drops only the fixture nodes shipped in the example
+// allowlist. It leaves every operator-configured node intact, including nodes
+// that are currently offline.
+func realAllowlistEntries(entries []registry.AllowlistEntry) []registry.AllowlistEntry {
+	real := make([]registry.AllowlistEntry, 0, len(entries))
+	for _, entry := range entries {
+		if _, example := exampleNodeHostnames[entry.Hostname]; !example {
+			real = append(real, entry)
+		}
+	}
+	return real
 }
 
 func (a *OrchestratorApp) StartRPC(hostname string) (*DesktopNode, error) {
