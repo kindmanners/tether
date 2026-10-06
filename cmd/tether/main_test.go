@@ -78,6 +78,23 @@ func TestResolveAllowlistPathCreatesFirstRunFile(t *testing.T) {
 	}
 }
 
+func TestRealAllowlistEntriesDropsOnlyExamples(t *testing.T) {
+	entries := []registry.AllowlistEntry{
+		{Hostname: "=examples", Role: "rpc-node", AgentPort: 7420, RPCPort: 50052},
+		{Hostname: "offline-real-node", Role: "rpc-node", AgentPort: 7420, RPCPort: 50053},
+		{Hostname: "examplesv2", Role: "rpc-node", AgentPort: 7420, RPCPort: 50052},
+		{Hostname: "online-real-node", Role: "rpc-node", AgentPort: 7420, RPCPort: 50054},
+	}
+
+	got := realAllowlistEntries(entries)
+	if len(got) != 2 {
+		t.Fatalf("realAllowlistEntries() returned %d entries, want 2: %#v", len(got), got)
+	}
+	if got[0].Hostname != "offline-real-node" || got[1].Hostname != "online-real-node" {
+		t.Errorf("realAllowlistEntries() = %#v, want the real entries in order", got)
+	}
+}
+
 type fakeCommandClient struct {
 	calls []string
 }

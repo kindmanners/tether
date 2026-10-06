@@ -125,6 +125,41 @@
       </form>
     </dialog>
 
+    <dialog id="model-plan-dialog" class="decision-dialog" aria-labelledby="model-plan-title" aria-describedby="model-plan-summary">
+      <form method="dialog">
+        <div class="dialog-index" aria-hidden="true">PLAN</div>
+        <p class="eyebrow">Placement review</p>
+        <h2 id="model-plan-title">Load <span id="model-plan-name"></span>?</h2>
+        <p id="model-plan-summary">Review the live capacity plan before Tether starts a model worker.</p>
+        <dl class="dialog-facts plan-facts">
+          <div><dt>Model file</dt><dd id="model-plan-size">—</dd></div>
+          <div><dt>Runtime reservation</dt><dd id="model-plan-reserve">—</dd></div>
+          <div><dt>Model reserve</dt><dd id="model-plan-model-reserve">—</dd></div>
+          <div><dt>KV cache</dt><dd id="model-plan-kv-cache">—</dd></div>
+          <div class="wide"><dt>Placement</dt><dd id="model-plan-placement">—</dd></div>
+          <div class="wide"><dt>Capacity sampled</dt><dd id="model-plan-observed">—</dd></div>
+        </dl>
+        <div class="dialog-callout">
+          <strong>What happens next</strong>
+          <p id="model-plan-detail">Capacity is checked again when loading starts.</p>
+          <p>Model startup can take up to five minutes. You can follow its state from the model card.</p>
+        </div>
+        <div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button value="confirm">Load model</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="safety-dialog" class="decision-dialog" aria-labelledby="safety-title" aria-describedby="safety-summary">
+      <form method="dialog">
+        <div class="dialog-index" aria-hidden="true">CHECK</div>
+        <p id="safety-eyebrow" class="eyebrow">Review action</p>
+        <h2 id="safety-title">Confirm action</h2>
+        <p id="safety-summary"></p>
+        <dl id="safety-facts" class="dialog-facts"></dl>
+        <div class="dialog-callout"><p id="safety-note"></p></div>
+        <div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button id="confirm-safety" value="confirm">Continue</button></div>
+      </form>
+    </dialog>
+
     <script src="app.js"></script>
   </body>
 </html>

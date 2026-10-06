@@ -3,6 +3,7 @@
 Tether is a desktop control plane for distributed local LLM inference across
 machines on a private Tailscale network. It uses llama.cpp's RPC mode to pool
 GPU memory across physical devices without requiring cloud infrastructure.
+Note: Tether does NOT promise speed. It promises that you can run bigger models or models with more context. 
 
 ## What it includes
 

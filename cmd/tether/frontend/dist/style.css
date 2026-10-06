@@ -244,6 +244,19 @@ dialog p { position: relative; max-width: 410px; }
 label { position: relative; display: block; font-size: .75rem; font-weight: 700; margin-top: 25px; }
 input, select { display: block; width: 100%; min-height: 46px; margin-top: 9px; border: 1px solid var(--ink); border-radius: 0; background: var(--white); color: var(--ink); padding: 12px; }
 .dialog-actions { position: relative; justify-content: flex-end; margin-top: 26px; }
+.decision-dialog { width: min(650px, calc(100vw - 30px)); max-height: calc(100dvh - 30px); }
+.decision-dialog form { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.decision-dialog h2 span { overflow-wrap: anywhere; }
+.dialog-facts { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 26px 0 0; border-top: 1px solid var(--hairline); border-left: 1px solid var(--hairline); }
+.dialog-facts > div { min-width: 0; padding: 13px 14px; border-right: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); background: var(--card); }
+.dialog-facts > div.wide { grid-column: 1 / -1; }
+.dialog-facts dd { overflow-wrap: anywhere; font-family: "SFMono-Regular", Consolas, monospace; line-height: 1.45; }
+.dialog-callout { position: relative; margin-top: 18px; padding: 14px 16px; border-left: 3px solid var(--blue); background: var(--blue-soft); }
+.dialog-callout strong { display: block; margin-bottom: 4px; font-size: .72rem; }
+.dialog-callout p { max-width: none; margin: 0; font-size: .7rem; }
+.dialog-callout p + p { margin-top: 7px; color: var(--muted); }
+button.caution { border-color: var(--warning); background: var(--warning); }
+button.caution:hover { border-color: var(--warning); color: var(--warning); }
 
 .reveal { animation: reveal-up 620ms cubic-bezier(.2,.75,.2,1) both; }
 .masthead { animation-delay: 70ms; }
@@ -298,6 +311,8 @@ body.is-cluster-ready .masthead-copy { display: none; }
   .node-facts { grid-template-columns: 1fr; }
   .node-facts > div + div { border-left: 0; border-top: 1px solid var(--hairline); padding-left: 0; }
   dialog form { padding: 27px 22px; }
+  .dialog-facts { grid-template-columns: 1fr; }
+  .dialog-facts > div.wide { grid-column: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

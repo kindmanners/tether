@@ -171,7 +171,6 @@ func (s *Server) Start(ctx context.Context, addr string, tlsConfig *tls.Config) 
 	var serveErr error
 	select {
 	case <-ctx.Done():
-		// normal path: caller wants this server to stop.
 	case err := <-serverErrCh:
 		serveErr = fmt.Errorf("agent command server error: %w", err)
 	}
