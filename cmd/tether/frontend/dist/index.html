@@ -5,51 +5,62 @@
   it under the terms of the GNU Affero General Public License as
   published by the Free Software Foundation, either version 3 of the
   License, or (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU Affero General Public License for more details.
-
-  You should have received a copy of the GNU Affero General Public License
-  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tether</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#eef3f5" />
+    <title>Tether Orchestrator</title>
     <link rel="stylesheet" href="style.css" />
     <link rel="stylesheet" href="add-node.css" />
   </head>
   <body>
-    <div class="page-frame" aria-hidden="true"></div>
-    <main>
-      <div class="utility-bar reveal">
-        <a class="wordmark" href="#top" aria-label="Tether Orchestrator home">Tether</a>
-        <p>Orchestrator</p>
-        <p class="utility-status"><span></span><span id="node-count">Checking nodes</span></p>
-		<button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span aria-hidden="true">◐</span><span class="theme-label">Dark</span></button>
-      </div>
+    <a class="skip-link" href="#workspace">Skip to workspace</a>
 
-      <header id="top" class="masthead reveal">
+    <header class="utility-bar">
+      <a class="wordmark" href="#top" aria-label="Tether Orchestrator home">TETHER</a>
+      <span class="topbar-divider" aria-hidden="true"></span>
+      <p class="surface-label">Orchestrator</p>
+      <p class="utility-status"><span aria-hidden="true"></span><span id="node-count">Checking nodes</span></p>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false">
+        <span class="theme-icon" aria-hidden="true"></span><span class="theme-label">Dark mode</span>
+      </button>
+    </header>
+
+    <main id="top">
+      <section class="operational-overview" aria-labelledby="workspace-headline">
         <div class="masthead-copy">
-          <p class="eyebrow">Distributed inference control</p>
-          <h1 id="workspace-headline">Bring every GPU into one workspace.</h1>
+          <h1 id="workspace-headline">Control your cluster from one place.</h1>
+          <p class="overview-description">Pair trusted Tailnet machines, prepare their GPU backends, and serve placed models through one local OpenAI-compatible endpoint.</p>
+          <p class="overview-boundary"><span aria-hidden="true"></span>Private Tailnet control plane</p>
         </div>
-      </header>
 
-      <section class="gateway panel reveal" aria-labelledby="gateway-heading">
-        <div class="section-number" aria-hidden="true">01</div>
-        <div class="gateway-copy">
-          <p class="eyebrow">Local inference endpoint</p>
-          <h2 id="gateway-heading"><strong id="gateway-state">Checking gateway…</strong></h2>
-          <p id="gateway-detail">Reading the local gateway state.</p>
+        <section class="gateway panel" aria-labelledby="gateway-heading">
+          <div class="gateway-heading">
+            <div>
+              <h2 id="gateway-heading"><strong id="gateway-state">Checking gateway…</strong></h2>
+            </div>
+            <button id="start-gateway">Start gateway</button>
+          </div>
+          <p id="gateway-detail" class="gateway-detail">Reading the local gateway state.</p>
+
+          <div class="control-seam" aria-hidden="true">
+            <span class="control-stratum control-stratum--one"></span>
+            <span class="control-stratum control-stratum--two"></span>
+            <span class="control-stratum control-stratum--three"></span>
+            <span class="control-scan"></span>
+          </div>
+
+          <div class="gateway-endpoints" aria-label="Local gateway credentials">
+            <code id="gateway-endpoint">http://127.0.0.1:11435/v1</code>
+            <code id="gateway-api-key" title="Use as the Bearer token in local OpenAI clients"></code>
+          </div>
+
           <div class="local-gpu-control" aria-live="polite">
             <div>
-              <p class="eyebrow">This Orchestrator</p>
               <strong id="contribution-state">Checking local GPU role…</strong>
               <p id="contribution-detail">Reading the local backend state.</p>
             </div>
@@ -58,45 +69,45 @@
               <button id="prepare-backend" class="secondary">Prepare local backend</button>
             </div>
           </div>
-        </div>
-        <div class="gateway-actions">
-          <code id="gateway-endpoint">http://127.0.0.1:11435/v1</code>
-          <code id="gateway-api-key" title="Use as the Bearer token in local OpenAI clients"></code>
-          <button id="start-gateway">Start gateway</button>
-        </div>
+        </section>
       </section>
 
-      <section class="readiness reveal" aria-label="Connection process">
-        <div><span>01</span><strong>Tailscale</strong><p>Only allowlisted Tailnet machines appear here.</p></div>
-        <div><span>02</span><strong>Pair</strong><p>Confirm the Agent’s one-time code before control is enabled.</p></div>
-        <div><span>03</span><strong>Run</strong><p>Start each node’s local RPC server, then use the local API endpoint.</p></div>
+      <section class="readiness" aria-label="Connection process">
+        <div><span>1</span><strong>Connect through Tailscale</strong><p>Only allowlisted Tailnet machines enter the control plane.</p></div>
+        <div><span>2</span><strong>Establish trust</strong><p>Confirm the Agent’s one-time code before control is enabled.</p></div>
+        <div><span>3</span><strong>Run the workload</strong><p>Start local RPC services, then place a model behind the gateway.</p></div>
       </section>
 
-      <nav class="workspace-tabs reveal" aria-label="Orchestrator workspace" role="tablist">
-        <button id="cluster-tab" class="workspace-tab" data-tab="cluster" role="tab" aria-selected="true" aria-controls="cluster-panel" tabindex="0">Cluster</button>
-        <button id="models-tab" class="workspace-tab" data-tab="models" role="tab" aria-selected="false" aria-controls="models-panel" tabindex="-1">Models</button>
-      </nav>
+      <section id="workspace" class="workspace-shell" aria-label="Orchestrator workspace">
+        <nav class="workspace-tabs" aria-label="Orchestrator workspace" role="tablist">
+          <button id="cluster-tab" class="workspace-tab" data-tab="cluster" role="tab" aria-selected="true" aria-controls="cluster-panel" tabindex="0">Cluster</button>
+          <button id="models-tab" class="workspace-tab" data-tab="models" role="tab" aria-selected="false" aria-controls="models-panel" tabindex="-1">Models</button>
+        </nav>
 
-      <section id="cluster-panel" class="nodes-section reveal" role="tabpanel" aria-labelledby="cluster-tab">
-        <div class="section-title">
-          <div><p class="eyebrow">Cluster</p><h2 id="nodes-heading">Inference nodes</h2></div>
-          <div class="cluster-actions">
-            <div class="cluster-meta"><p><span id="online-count">—</span> online</p><p><span id="paired-count">—</span> paired</p></div>
-            <div class="node-toolbar"><button id="add-node" class="secondary">Add Tailnet node</button><button id="refresh" class="secondary">Refresh nodes</button></div>
+        <section id="cluster-panel" class="nodes-section" role="tabpanel" aria-labelledby="cluster-tab">
+          <div class="section-title">
+            <div><h2 id="nodes-heading">Compute contributors</h2><p>Trusted machines available to the Orchestrator.</p></div>
+            <div class="cluster-actions">
+              <dl class="cluster-meta" aria-label="Cluster status">
+                <div><dt>Online</dt><dd id="online-count">—</dd></div>
+                <div><dt>Paired</dt><dd id="paired-count">—</dd></div>
+              </dl>
+              <div class="node-toolbar"><button id="add-node" class="secondary">Add Tailnet node</button><button id="refresh" class="secondary">Refresh nodes</button></div>
+            </div>
           </div>
-        </div>
-        <div id="nodes" class="nodes"></div>
-        <p id="allowlist" class="allowlist-path"></p>
-      </section>
+          <div id="nodes" class="nodes"></div>
+          <p id="allowlist" class="allowlist-path"></p>
+        </section>
 
-      <section id="models-panel" class="models-section reveal" role="tabpanel" aria-labelledby="models-tab" hidden>
-        <div class="section-title">
-          <div><p class="eyebrow">Library</p><h2>Models</h2></div>
-          <div class="node-toolbar"><button id="download-gpt-oss" class="secondary">Download gpt-oss-20b</button><button id="refresh-models" class="secondary">Refresh library</button></div>
-        </div>
-        <p id="model-directory" class="allowlist-path"></p>
-        <div id="model-download"></div>
-        <div id="models" class="models"></div>
+        <section id="models-panel" class="models-section" role="tabpanel" aria-labelledby="models-tab" hidden>
+          <div class="section-title">
+            <div><h2>Model library</h2><p>GGUF inventory, placement, and lifecycle.</p></div>
+            <div class="node-toolbar"><button id="download-gpt-oss" class="secondary">Download gpt-oss-20b</button><button id="refresh-models" class="secondary">Refresh library</button></div>
+          </div>
+          <p id="model-directory" class="allowlist-path"></p>
+          <div id="model-download"></div>
+          <div id="models" class="models"></div>
+        </section>
       </section>
 
       <p id="notice" role="status" aria-live="polite"></p>
@@ -104,8 +115,6 @@
 
     <dialog id="pair-dialog">
       <form method="dialog">
-        <div class="dialog-index" aria-hidden="true">PAIR</div>
-        <p class="eyebrow">Secure pairing</p>
         <h2 id="pair-title"></h2>
         <p>Read the one-time code in Tether Agent on that machine, then enter it here. The code is never saved.</p>
         <label>Pairing code<input id="pair-code" autocomplete="off" /></label>
@@ -115,8 +124,6 @@
 
     <dialog id="add-dialog">
       <form method="dialog">
-        <div class="dialog-index" aria-hidden="true">ADD</div>
-        <p class="eyebrow">Allowlist</p>
         <h2>Choose the GPU machine</h2>
         <p>Adding a machine grants Tether permission to look for its Agent. Pairing is still required before any control action.</p>
         <label>Online Tailnet machine<select id="candidate-select"></select></label>
@@ -127,8 +134,6 @@
 
     <dialog id="model-plan-dialog" class="decision-dialog" aria-labelledby="model-plan-title" aria-describedby="model-plan-summary">
       <form method="dialog">
-        <div class="dialog-index" aria-hidden="true">PLAN</div>
-        <p class="eyebrow">Placement review</p>
         <h2 id="model-plan-title">Load <span id="model-plan-name"></span>?</h2>
         <p id="model-plan-summary">Review the live capacity plan before Tether starts a model worker.</p>
         <dl class="dialog-facts plan-facts">
@@ -150,8 +155,6 @@
 
     <dialog id="safety-dialog" class="decision-dialog" aria-labelledby="safety-title" aria-describedby="safety-summary">
       <form method="dialog">
-        <div class="dialog-index" aria-hidden="true">CHECK</div>
-        <p id="safety-eyebrow" class="eyebrow">Review action</p>
         <h2 id="safety-title">Confirm action</h2>
         <p id="safety-summary"></p>
         <dl id="safety-facts" class="dialog-facts"></dl>
