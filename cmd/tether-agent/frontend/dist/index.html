@@ -5,108 +5,139 @@
   it under the terms of the GNU Affero General Public License as
   published by the Free Software Foundation, either version 3 of the
   License, or (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU Affero General Public License for more details.
-
-  You should have received a copy of the GNU Affero General Public License
-  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#eef3f5" />
     <title>Tether Agent</title>
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <div class="page-frame" aria-hidden="true"></div>
-    <main>
-      <div class="utility-bar reveal">
-        <a class="wordmark" href="#top" aria-label="Tether Agent home">Tether</a>
-        <p>Agent</p>
-        <p class="utility-status"><span></span><span id="machine-state">Checking machine</span></p>
-        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false">Dark mode</button>
-      </div>
+    <a class="skip-link" href="#preflight">Skip to preflight</a>
 
-      <header id="top" class="status-hero reveal">
-        <div class="hero-index" aria-hidden="true"></div>
-        <div class="hero-copy">
-          <p class="eyebrow">GPU node readiness</p>
-          <h1 id="headline">Checking this machine…</h1>
-          <p id="summary" class="summary">Tether is verifying local files and secure connectivity before offering any setup action.</p>
-          <p id="last-refreshed" class="refresh-meta">Last refreshed: checking…</p>
-        </div>
-        <button id="refresh" class="secondary">Check again</button>
-      </header>
+    <header class="utility-bar">
+      <a class="wordmark" href="#top" aria-label="Tether Agent home">TETHER</a>
+      <span class="topbar-divider" aria-hidden="true"></span>
+      <p class="surface-label">Agent</p>
+      <p class="utility-status"><span aria-hidden="true"></span><span id="machine-state">Checking machine</span></p>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Switch to dark mode" aria-pressed="false">
+        <span class="theme-icon" aria-hidden="true"></span><span class="theme-label">Dark mode</span>
+      </button>
+    </header>
 
-      <div class="action-stack reveal">
-        <section id="setup-panel" class="action-panel" hidden>
-          <div><p class="eyebrow">Guided local setup</p><h2>Set up this GPU node</h2></div>
-          <p id="setup-description">The audited local setup checks prerequisites, builds the pinned llama.cpp CUDA RPC server, writes only local Agent configuration and a capability report, and keeps pairing as a separate explicit step.</p>
-          <button id="provision">Run audited local setup</button>
+    <main id="top">
+      <section class="agent-overview" aria-labelledby="headline">
+        <header class="status-hero">
+          <div class="hero-copy">
+            <h1 id="headline">Checking this machine…</h1>
+            <p id="summary" class="summary">Tether is verifying local files and secure connectivity before offering any setup action.</p>
+            <p class="trust-boundary"><span aria-hidden="true"></span>Private Tailnet contributor</p>
+          </div>
+        </header>
+
+        <section class="node-survey panel" aria-label="Node readiness and next action">
+          <div class="node-survey-heading">
+            <div>
+              <h2>Node readiness</h2>
+              <p id="last-refreshed" class="refresh-meta">Last refreshed: checking…</p>
+            </div>
+            <button id="refresh" class="secondary">Check again</button>
+          </div>
+
+          <div class="capacity-seam" aria-hidden="true">
+            <span class="capacity-stratum capacity-stratum--one"></span>
+            <span class="capacity-stratum capacity-stratum--two"></span>
+            <span class="capacity-stratum capacity-stratum--three"></span>
+            <span class="capacity-scan"></span>
+          </div>
+
+          <div class="action-stack">
+            <section id="setup-panel" class="action-panel" hidden>
+              <div><h2>Set up this GPU node</h2><p id="setup-description">The audited local setup checks prerequisites, builds the pinned llama.cpp CUDA RPC server, writes only local Agent configuration and a capability report, and keeps pairing as a separate explicit step.</p></div>
+              <button id="provision">Run audited local setup</button>
+            </section>
+
+            <section id="ready-panel" class="action-panel ready" hidden>
+              <div><h2>This GPU node is online.</h2><p class="ready-reassurance">Securely paired, verified, and available to the Orchestrator.</p></div>
+              <div class="ready-detail"><p id="service-note">The local Agent service is starting.</p><p id="heartbeat-note" class="heartbeat-note"></p></div>
+              <button id="reset-pairing" class="secondary repair-button" hidden>Re-pair Orchestrator</button>
+            </section>
+
+            <section id="pair-panel" class="action-panel" hidden>
+              <div><h2>Pair with the Orchestrator</h2><p>Pairing creates a short-lived one-time code and pins the Orchestrator certificate. It does not install or change local GPU software.</p></div>
+              <button id="open-pair">Open pairing window</button>
+            </section>
+          </div>
+
+          <section id="code-panel" class="code-panel" hidden aria-live="polite">
+            <div><h2>Enter this code in Tether</h2><p>Use it on the Orchestrator within two minutes. It is shown only on this machine and is never saved.</p></div>
+            <strong id="pair-code"></strong>
+          </section>
+        </section>
+      </section>
+
+      <section class="lifecycle" aria-label="Agent connection process">
+        <div><span>1</span><strong>Inspect this machine</strong><p>Verify Tailscale, CUDA, configuration, and the pinned RPC build.</p></div>
+        <div><span>2</span><strong>Establish trust</strong><p>Share one short-lived code with the Orchestrator.</p></div>
+        <div><span>3</span><strong>Contribute capacity</strong><p>Serve GPU work only through the paired control plane.</p></div>
+      </section>
+
+      <section id="preflight" class="workspace-shell" aria-label="Agent diagnostics">
+        <section class="checklist-panel" aria-labelledby="checklist-heading">
+          <div class="section-heading">
+            <div><h2 id="checklist-heading">Machine preflight</h2><p>Read-only checks that must pass before this Agent can contribute.</p></div>
+            <div class="progress-summary"><p id="progress-caption">Checking progress</p><strong id="progress-count">—</strong></div>
+          </div>
+          <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
+          <ol id="checklist" class="checklist"></ol>
         </section>
 
-        <section id="ready-panel" class="action-panel ready" hidden>
-          <div><p class="eyebrow">Ready for work</p><h2>This GPU node is online.</h2><p class="ready-reassurance">Securely paired, verified, and available to the Orchestrator.</p></div>
-          <div class="ready-detail"><p id="service-note">The local Agent service is starting.</p><p id="heartbeat-note" class="heartbeat-note"></p></div>
-          <button id="reset-pairing" class="repair-button" hidden><span>Connection settings</span>Re-pair Orchestrator</button>
+        <section class="telemetry-panel" aria-labelledby="telemetry-heading">
+          <div class="section-heading compact">
+            <div><h2 id="telemetry-heading">GPU availability</h2><p>Live capacity reported by this machine.</p></div>
+            <p id="telemetry-updated" class="telemetry-updated">Waiting for GPU telemetry</p>
+          </div>
+          <div id="gpu-telemetry" class="gpu-telemetry"></div>
+          <div class="model-record">
+            <div><strong id="model-status">Checking model status…</strong><span>Active model</span></div>
+            <p>The paired Orchestrator selects and loads the GGUF model; model lifecycle is not controlled locally.</p>
+          </div>
         </section>
 
-        <section id="pair-panel" class="action-panel" hidden>
-          <div><p class="eyebrow">Secure pairing</p><h2>Pair when the Orchestrator is ready.</h2></div>
-          <p>Pairing creates a short-lived one-time code and pins the Orchestrator certificate. It does not install or change local GPU software.</p>
-          <button id="open-pair">Open pairing window</button>
+        <section class="machine" aria-labelledby="machine-heading">
+          <div class="section-heading compact"><div><h2 id="machine-heading">Local configuration</h2><p>Exact paths and identity used by this Agent.</p></div></div>
+          <dl>
+            <div><dt>Tailscale hostname</dt><dd id="hostname">Checking…</dd></div>
+            <div><dt>Agent configuration</dt><dd id="config">Checking…</dd><button id="finish-setup" class="secondary" hidden>Finish local setup</button></div>
+            <div><dt>GPU setup report</dt><dd id="report">Checking…</dd></div>
+          </dl>
         </section>
-      </div>
 
-      <section id="setup-log-panel" class="setup-log-panel reveal" hidden aria-labelledby="setup-log-heading">
-        <div class="section-heading compact"><div><p class="eyebrow">Persistent setup log</p><h2 id="setup-log-heading">Live local setup output</h2></div><p id="setup-log-path"></p></div>
-        <pre id="setup-log"></pre>
-      </section>
-
-      <section class="checklist-panel reveal" aria-labelledby="checklist-heading">
-        <div class="section-heading">
-          <div><p class="eyebrow">Read-only preflight</p><h2 id="checklist-heading">What this Agent checked</h2></div>
-          <div class="progress-summary"><p id="progress-caption">Checking progress</p><strong id="progress-count">—</strong></div>
-        </div>
-        <div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div>
-        <ol id="checklist" class="checklist"></ol>
-      </section>
-
-      <section id="code-panel" class="code-panel reveal" hidden>
-        <div><p class="eyebrow">One-time pairing code</p><h2>Enter this code in Tether</h2></div>
-        <strong id="pair-code"></strong>
-        <p>Use it on the Orchestrator within two minutes. It is shown only on this machine and is never saved.</p>
-      </section>
-
-      <section class="telemetry-panel reveal" aria-labelledby="telemetry-heading">
-        <div class="section-heading compact">
-          <div><p class="eyebrow">Live capacity</p><h2 id="telemetry-heading">GPU availability</h2></div>
-          <p id="telemetry-updated" class="telemetry-updated">Waiting for GPU telemetry</p>
-        </div>
-        <div id="gpu-telemetry" class="gpu-telemetry"></div>
-        <div class="model-record">
-          <div><p class="eyebrow">Active model</p><strong id="model-status">Checking model status…</strong></div>
-          <p>The Agent contributes GPU capacity. The paired Orchestrator selects and loads the GGUF model, so its active model is not local to this node.</p>
-        </div>
-      </section>
-
-      <section class="machine panel reveal" aria-labelledby="machine-heading">
-        <div class="section-heading compact"><div><p class="eyebrow">Machine record</p><h2 id="machine-heading">Local configuration</h2></div></div>
-        <dl>
-          <div><dt>Tailscale hostname</dt><dd id="hostname">Checking…</dd></div>
-          <div><dt>Agent configuration</dt><dd id="config">Checking…</dd><button id="finish-setup" class="secondary" hidden>Finish local setup</button></div>
-          <div><dt>GPU setup report</dt><dd id="report">Checking…</dd></div>
-        </dl>
+        <section id="setup-log-panel" class="setup-log-panel" hidden aria-labelledby="setup-log-heading">
+          <div class="section-heading compact"><div><h2 id="setup-log-heading">Live local setup output</h2><p>Persistent output from the audited setup process.</p></div><p id="setup-log-path"></p></div>
+          <pre id="setup-log"></pre>
+        </section>
       </section>
 
       <p id="notice" role="status" aria-live="polite"></p>
     </main>
+
+    <dialog id="repair-dialog" aria-labelledby="repair-title" aria-describedby="repair-summary">
+      <form method="dialog">
+        <h2 id="repair-title">Re-pair with another Orchestrator?</h2>
+        <p id="repair-summary">This stops the Agent and removes its current local trust record before creating a new one-time code.</p>
+        <dl class="dialog-facts">
+          <div><dt>Removed locally</dt><dd>Agent key, certificate, and saved Orchestrator trust</dd></div>
+          <div><dt>Recovery</dt><dd>Complete pairing again from the Orchestrator</dd></div>
+        </dl>
+        <div class="dialog-actions"><button value="cancel" class="secondary">Cancel</button><button value="confirm" class="caution">Remove trust and re-pair</button></div>
+      </form>
+    </dialog>
+
     <script src="app.js"></script>
   </body>
 </html>

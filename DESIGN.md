@@ -1,6 +1,6 @@
 ---
 name: Tether
-description: A shared Capacity Survey system for Tether's diagnostic dashboard and operational Orchestrator.
+description: A shared Capacity Survey system for Tether's dashboard, Orchestrator, and Agent surfaces.
 colors:
   ground: "#eef3f5"
   surface: "#f9fbfb"
@@ -45,6 +45,12 @@ typography:
   display-orchestrator:
     fontFamily: "Assistant, Segoe UI, sans-serif"
     fontSize: "clamp(2.8rem, 4.5vw, 5rem)"
+    fontWeight: 720
+    lineHeight: 0.95
+    letterSpacing: "-0.035em"
+  display-agent:
+    fontFamily: "Assistant, Segoe UI, sans-serif"
+    fontSize: "clamp(2.9rem, 5vw, 5rem)"
     fontWeight: 720
     lineHeight: 0.95
     letterSpacing: "-0.035em"
@@ -145,9 +151,9 @@ components:
 
 Tether treats distributed compute like a geological survey: separate machines become one legible seam of pooled capacity. Pale stone fields and broad raised survey surfaces provide quiet structure; mineral navy and glacial blue reveal system relationships; lichen and oxidized coral state what is healthy, unavailable, recorded, or consequential. The atmosphere is technically precise and materially grounded, never terminal cosplay.
 
-The browser dashboard and Wails Orchestrator are coordinated product surfaces within this one system. The dashboard reads the survey and remains explicitly diagnostic and read-only. The Orchestrator marks, connects, prepares, and activates the surveyed system. Both begin with state and system truth, then reveal contributors and records; the operational surface alone adds actions, review dialogs, endpoint credentials, and lifecycle controls.
+The browser dashboard, Wails Orchestrator, and Wails Agent are coordinated product surfaces within this one system. The dashboard reads the cluster survey and remains explicitly diagnostic and read-only. The Orchestrator marks, connects, prepares, and activates the cluster. The Agent inspects one contributor, establishes trust, and reports local readiness and capacity. All three begin with runtime truth, then reveal evidence and records; only the two Wails surfaces add real actions and protected operational decisions.
 
-Light and dark are equivalent environmental themes, not separate identities. Dashboard, Orchestrator, Overview, Topology, and Records are view or surface variants. Every variant shares Assistant typography, measured corners, broad regions, fine rules, contour language, state semantics, responsive re-composition, and an honest distinction between unknown data and zero.
+Light and dark are equivalent environmental themes, not separate identities. Dashboard, Orchestrator, Agent, Overview, Topology, and Records are view or surface variants. Every variant shares Assistant typography, measured corners, broad regions, fine rules, contour language, state semantics, responsive re-composition, and an honest distinction between unknown data and zero.
 
 **Key Characteristics:**
 
@@ -157,6 +163,7 @@ Light and dark are equivalent environmental themes, not separate identities. Das
 - Explicit state truth: words, provenance, timestamps, and consequences accompany color.
 - Responsive re-composition: grids stack, trust steps rotate, and tables become labeled records.
 - Familiar controls with preserved Wails behavior; expression belongs to seams and contours.
+- Lifecycle order is meaningful: Inspect, establish trust, then contribute capacity.
 
 ## Colors
 
@@ -204,13 +211,14 @@ The shared palette is a cool mineral survey. The frontmatter is normative for li
 
 - **Dashboard Display** (720, dashboard display token, 0.98): compact diagnostic orientation, balanced around a short 15-character measure.
 - **Orchestrator Display** (720, orchestrator display token, 0.95): stronger operational orientation, capped near 12 characters per line.
+- **Agent Display** (720, Agent display token, 0.95): emphatic single-machine readiness, balanced within an 8.5-character measure.
 - **Headline** (720, headline token, 1.05): major data and workspace regions.
 - **Title** (720, title token, 1.05): compact capacity and gateway panel titles.
 - **Body** (400, body token, 1.5): system context, consequences, and explanatory copy; keep long lines near 38–60 characters by context.
 - **Measurement** (720, fluid 1.6–2.5rem, 1): pooled counts, VRAM totals, and cluster facts; use tabular numerals.
 - **Label** (720, label token, 1.35): table headers, state metadata, source notes, field labels, and compact actions.
 - **Code Value** (400, code token, 1.35): genuine endpoints, API keys, paths, ports when represented as literal code, and code-like values only.
-- **Wordmark** (800, 1.45rem desktop / 1.05rem compact, 0.2em tracking): TETHER only.
+- **Wordmark** (800): TETHER only. Dashboard and Orchestrator use 1.45rem desktop / 1.05rem compact with 0.2em tracking; the quieter Agent uses 1.15rem / 1rem with 0.18em tracking.
 
 **The Measurement Voice Rule.** Large type belongs to capacity, readiness, and summary values. Paths, ports, provenance, and timestamps remain supporting information.
 
@@ -220,15 +228,15 @@ The shared palette is a cool mineral survey. The frontmatter is normative for li
 
 ## Layout
 
-Both surfaces use a compact sticky product bar, fluid page padding, and a broad centered content field. The dashboard caps at 94rem; the Orchestrator main workspace caps at 96rem. A 4.5rem utility bar preserves orientation and theme access, compressing to 4rem at small widths. Shared horizontal padding uses the `page` token and tightens to 0.85rem below 680px.
+All three surfaces use a compact sticky product bar, fluid page padding, and a broad centered content field. The dashboard caps at 94rem; the Orchestrator main workspace caps at 96rem; the Agent caps at 1440px inside its native window. Dashboard and Orchestrator use a 4.5rem utility bar that compresses to 4rem; the quieter Agent bar is 64px and compresses to 58px. Shared horizontal padding uses the `page` token and tightens on compact viewports.
 
 The first region is deliberately asymmetric: a narrow narrative column and a wide system panel use approximately 0.43fr / 1.1fr columns with a fluid 1.25–2rem gutter. On the dashboard the right side is the pooled-capacity seam. In the Orchestrator it is gateway readiness, endpoint credentials, local GPU role, and the control-plane seam. This shared composition coordinates the surfaces while keeping their jobs distinct.
 
-At 980px first-view grids stack, supporting explanations widen, action groups move below their headings, and two-column record grids collapse. At 680px controls wrap into full-width groups, endpoint fields stack, horizontal readiness steps become a vertical path, node facts become single-column rows, dialog facts become one column, and dashboard tables become labeled records. Never solve density with illegibly small text or a horizontally scrolling mobile table.
+At 980px the dashboard and Orchestrator begin compact reflow. The Agent’s readiness overview stacks below 900px, while its native 970px desktop window preserves the asymmetric first view. At 680px controls wrap into full-width groups, endpoint fields stack, horizontal readiness steps become a vertical path, node and machine facts become single-column rows, dialog facts become one column, checklist pairs become a single sequence, telemetry becomes one column, and dashboard tables become labeled records. The shipped 390px Agent view retains full runtime truth, readable exact values, and protected actions without horizontal scrolling. Never solve density with illegibly small text.
 
 The spacing rhythm is compact inside data structures and generous between regions: 0.35–0.75rem for related values, 1–1.4rem for component interiors, and about 1.15rem between major panels. Preserve the 320px minimum viewport and safe-area padding where a surface reaches the window edge.
 
-Overview, Topology, and Records remain compositional variants within the same shell. Overview leads with pooled capacity or readiness, Topology may lead with relationships between contributors, and Records may lead with histories or inventories. None receives a separate palette, typography, or decorative language.
+Overview, Topology, Records, and single-machine readiness remain compositional variants within the same shell. Overview leads with pooled capacity or readiness, Topology may lead with relationships between contributors, Records may lead with histories or inventories, and the Agent leads with one machine’s readiness and next valid action. None receives a separate palette, typography, or decorative language.
 
 **The State-Before-Action Rule.** Establish identity, trust, readiness, availability, and consequences before presenting a control.
 
@@ -238,13 +246,15 @@ Overview, Topology, and Records remain compositional variants within the same sh
 
 ## Elevation & Depth
 
-The system combines tonal layering with one restrained ambient lift. Ground, raised panels, inset fields, fact grids, fine rules, and contour strata do most structural work. Major capacity, gateway, and workspace panels use survey lift (`0 16px 40px rgba(26, 55, 80, 0.09)`). Notices use a tighter operational shadow, and modal decisions use the strongest shadow plus a dark blurred backdrop. Ordinary controls and record cards remain flat.
+The system combines tonal layering with restrained ambient lift. Ground, raised panels, inset fields, fact grids, fine rules, and contour strata do most structural work. Major dashboard and Orchestrator regions use survey lift. The Agent uses a slightly broader theme-aware native-window lift to keep its single workspace coherent. Notices use a tighter operational shadow, and modal decisions use the strongest shadow plus a dark blurred backdrop. Ordinary controls and record cards remain flat.
 
 ### Shadow Vocabulary
 
 - **Survey lift** (`0 16px 40px rgba(26, 55, 80, 0.09)`): major capacity, gateway, and workspace regions.
+- **Agent survey lift** (`0 22px 46px rgba(31, 60, 82, 0.10)` light; `0 24px 54px rgba(0, 0, 0, 0.26)` dark): the Agent’s node survey, unified evidence workspace, and visible status notice.
 - **Operational notice** (`0 12px 30px rgba(10, 41, 72, 0.16)`): transient status and error notices only.
 - **Decision lift** (`0 24px 70px rgba(4, 18, 32, 0.34)`): modal confirmation and placement-review dialogs only.
+- **Protected trust lift** (`0 30px 80px rgba(0, 0, 0, 0.32)`): the Agent’s destructive re-pair review only.
 - **State halo** (`0 0 0 0.25–0.28rem` in the matching soft semantic color): compact live or readiness dots only.
 
 **The Broad-Surface Elevation Rule.** Elevate meaningful regions and decisions, not every metric, row, field, or action.
@@ -271,7 +281,7 @@ The capacity and control-plane seams are the signature silhouettes: clipped roun
 
 ### Buttons
 
-- **Shape:** Restrained control corners (11px); primary controls meet a 44px minimum height, while dense action shelves may use the shipped 38px compact minimum.
+- **Shape:** Restrained control corners (10–11px); dashboard and Orchestrator primary controls meet a 44px minimum height, the Agent uses a compact 42px native control, and dense Orchestrator action shelves may use the shipped 38px minimum.
 - **Primary:** Deep mineral fill with white text. Use for the next explicit operational step or dashboard refresh, never for every available action.
 - **Secondary:** Raised surface, ink text, and line border. Use for reversible or parallel actions.
 - **Caution:** Oxidized coral may fill a confirmed consequential action; the dialog must first explain impact.
@@ -294,7 +304,8 @@ The capacity and control-plane seams are the signature silhouettes: clipped roun
 
 - **Capacity seam:** The dashboard’s dominant quantitative visualization. Both regions show a strong measurement and written label; the legend and accessible label repeat exact meaning. The visible split is clamped for legibility while accessible text carries exact values.
 - **Control-plane seam:** The Orchestrator’s dominant state material. Lichen or coral may subtly mix into navy for running or unavailable states; it does not invent a numeric ratio.
-- **Motion:** Refresh triggers one 720ms scan and saturation-settle pass. Reduced motion suppresses animation while state text and color still update.
+- **Readiness seam:** The Agent’s non-quantitative node-readiness material. Its contour positions react to setup, provisioning, pairing, and ready states; it never presents those states as a fabricated capacity percentage.
+- **Motion:** Dashboard and Orchestrator refresh use one 720ms scan and saturation-settle pass. Agent refresh uses one slower 1.2s scan while its state contours settle over 650ms. Reduced motion suppresses animation while state text and color still update.
 
 ### Status, Freshness, and Notices
 
@@ -313,43 +324,55 @@ The capacity and control-plane seams are the signature silhouettes: clipped roun
 
 ### Readiness Path
 
-- **Desktop:** Three real ordered trust steps share one fine horizontal connector.
+- **Desktop:** Three real ordered trust steps share one fine horizontal connector. The Agent’s canonical sequence is **Inspect this machine → Establish trust → Contribute capacity**.
 - **Mobile:** Rotate into a vertical path with the numbered mark spanning its title and explanation.
 - **Rule:** Preserve the meaningful setup order. Do not reuse numbered circles as decorative section indices.
+
+### Agent Preflight and Telemetry
+
+- **Preflight:** A read-only evidence sequence, not an action checklist. Each record names the actual check, describes observed truth, and writes “Not started,” “In progress,” or “Finished” in addition to its state mark.
+- **Progress:** Pair the finished count with a written percentage and a restrained lichen track. Sequence order comes from the runtime checklist; do not add decorative ordinals.
+- **GPU telemetry:** Show exact GPU identity, utilization, used/total/free VRAM, driver version, update time, and a labeled capacity bar. Missing telemetry gets a direct empty-state sentence.
+- **Lifecycle boundary:** The Agent reports the active model but explains that the paired Orchestrator owns model placement and lifecycle.
+- **Machine records:** Hostname, configuration path, setup report, pairing code, and persistent log path use the semantic code role because character-level fidelity matters. Explanatory prose and dialog facts remain Assistant.
 
 ### Decision Dialogs
 
 - **Structure:** Decision title, plain-language summary, bordered fact grid, consequence callout, then cancel and confirm actions.
 - **Behavior:** Preserve native dialog semantics, focus handling, and every operational confirmation. Long dialogs scroll internally within the viewport.
 - **Consequences:** Destructive, interruptive, or resource-heavy actions name affected models, placement, capacity sample, destination, or interruption before confirmation.
+- **Agent re-pair:** The protected destructive dialog must state that the Agent stops and local key, certificate, and saved Orchestrator trust are removed; it must also state that pairing is the recovery path. Cancel remains the initial safe focus and the coral action names the consequence.
 
 ### Wails Operational Contract
 
-- **Bindings:** Existing DOM IDs and Go binding calls are behavior contracts. Visual work must not rename, remove, or bypass them.
+- **Bindings:** Existing DOM IDs and Go binding calls are behavior contracts. Visual work must not rename, remove, or bypass Orchestrator `AgentApp` calls or Agent `AgentApp.State`, `StartProvisioning`, `OpenPairing`, and `ResetPairing` flows.
 - **Refresh:** Live Snapshot and Models calls can update independently but must resolve into explicit visible state. Background preparation and telemetry polling remain quiet unless operator attention is required.
 - **Actions:** Pairing, allowlisting, RPC lifecycle, local GPU role, gateway start, download, load, and unload remain real controls with disabled, progress, success, cancellation, and error states.
 - **Security truth:** One-time pairing codes are not saved; pinned mTLS and Tailnet trust do not turn workers into a sandbox.
+- **Agent data truth:** Readiness derives from configuration, audited bootstrap, pairing, service, and heartbeat state. Preflight, telemetry, pairing code, logs, exact paths, provisioning progress, and errors remain literal runtime data; absence is never rewritten as success.
 
 ## Do's and Don'ts
 
 ### Do:
 
 - **Do** keep capacity or readiness dominant before records and actions.
-- **Do** coordinate dashboard and Orchestrator as two roles inside one Capacity Survey system.
+- **Do** coordinate dashboard, Orchestrator, and Agent as distinct roles inside one Capacity Survey system.
 - **Do** write “Live,” “Snapshot,” “read-only,” “Checking,” “Not reported,” and “Unavailable” wherever operator judgment depends on the distinction.
 - **Do** pair every state color with text, provenance, consequences, or a timestamp.
 - **Do** use Cascadia Mono only for genuine endpoint, API-key, path, command, or code values.
 - **Do** preserve Wails bindings, element IDs, confirmations, progress, focus behavior, and visible errors.
+- **Do** keep Agent preflight read-only, telemetry literal, and the Inspect → Establish trust → Contribute lifecycle meaningful.
 - **Do** transform dense desktop structures into stacked, labeled records on compact viewports.
 - **Do** keep light and dark structurally and semantically equivalent.
 
 ### Don't:
 
-- **Don't** split dashboard, Orchestrator, Overview, Topology, or Records into unrelated palettes or themes.
+- **Don't** split dashboard, Orchestrator, Agent, Overview, Topology, or Records into unrelated palettes or themes.
 - **Don't** turn the interface into equal metric tiles or reduce the seam to decorative chrome.
 - **Don't** use monospace, terminal motifs, decorative kickers, or meaningless indices to signal technical credibility.
 - **Don't** communicate health, trust, freshness, availability, or consequence through color alone.
 - **Don't** imply browser-side control on the read-only dashboard or hide operational impact in the Orchestrator.
 - **Don't** equate missing information with zero, healthy, ready, or live.
 - **Don't** remove or rename Wails-bound IDs, skip decision dialogs, or replace real actions with visual stand-ins.
+- **Don't** add ordinals to Agent preflight records or use the pairing code, machine paths, or logs as technical decoration.
 - **Don't** solve compact layouts with horizontal table scrolling or touch targets below the shipped minimums.
