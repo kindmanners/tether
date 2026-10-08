@@ -33,10 +33,11 @@ let latestLibrary;
 function setTheme(theme) {
   const isDark = theme === 'dark';
   document.documentElement.dataset.theme = isDark ? 'dark' : 'light';
+  document.querySelector('meta[name="theme-color"]').content = isDark ? '#07131f' : '#eef3f5';
   const toggle = document.querySelector('#theme-toggle');
   toggle.setAttribute('aria-pressed', String(isDark));
   toggle.setAttribute('aria-label', `Switch to ${isDark ? 'light' : 'dark'} mode`);
-  toggle.querySelector('.theme-label').textContent = isDark ? 'Light' : 'Dark';
+  toggle.querySelector('.theme-label').textContent = isDark ? 'Light mode' : 'Dark mode';
   localStorage.setItem('tether-theme', isDark ? 'dark' : 'light');
 }
 
@@ -158,8 +159,7 @@ function renderDialogFacts(container, facts) {
   }));
 }
 
-async function confirmSafetyAction({ eyebrow = 'Review action', title, summary, facts, note, confirmLabel, caution = false }) {
-  document.querySelector('#safety-eyebrow').textContent = eyebrow;
+async function confirmSafetyAction({ title, summary, facts, note, confirmLabel, caution = false }) {
   document.querySelector('#safety-title').textContent = title;
   document.querySelector('#safety-summary').textContent = summary;
   document.querySelector('#safety-note').textContent = note;
@@ -281,7 +281,6 @@ async function refresh({ quiet = false } = {}) {
 
     const renderedNodes = state.nodes.length ? state.nodes.map((node, index) => `
 		<article class="node-card ${node.hostname === celebratingHost ? 'just-paired' : ''}" style="--index:${index}" data-hostname="${escapeHTML(node.hostname)}" data-state="${stateClass(node.tailnet)}">
-        <span class="node-index">${String(index + 1).padStart(2, '0')}</span>
         <div class="node-top">
           <div><h3>${escapeHTML(node.hostname)}</h3><p>${escapeHTML(node.address || 'No Tailnet address')}</p></div>
           ${nodeState(node)}
@@ -403,7 +402,6 @@ async function startModelDownload() {
 	const expected = formatBytes(12109566624);
 	const required = formatBytes(12109566624 + 1024 ** 3);
 	const confirmed = await confirmSafetyAction({
-		eyebrow: 'Download review',
 		title: 'Download gpt-oss-20b?',
 		summary: 'Tether will download the pinned GGUF model into the local model library.',
 		facts: [
@@ -467,7 +465,6 @@ document.querySelector('#toggle-local-gpu').addEventListener('click', async () =
 	const activeModels = (latestLibrary?.models || []).filter(model => ['loaded', 'loading', 'idle-countdown', 'unloading'].includes(model.state)).map(model => model.id);
 	if (latestState?.gateway?.running) {
 		const confirmed = await confirmSafetyAction({
-			eyebrow: 'Service interruption',
 			title: 'Restart the gateway?',
 			summary: 'Changing this Orchestrator’s GPU role restarts the local gateway and interrupts active inference.',
 			facts: [
