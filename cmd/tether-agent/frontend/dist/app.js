@@ -17,6 +17,7 @@
 
 const api = () => window.go?.main?.AgentApp;
 const notice = document.querySelector('#notice');
+const repairDialog = document.querySelector('#repair-dialog');
 let refreshTimer;
 let lastTelemetrySignature = '';
 let lastChecklistSignature = '';
@@ -51,7 +52,7 @@ function renderTelemetry(gpus = [], modelStatus = '') {
     card.className = 'gpu-card';
     card.innerHTML = `<div class="gpu-card-heading"><p>GPU ${String(index + 1).padStart(2, '0')}</p><strong>${escapeHTML(gpu.name || 'NVIDIA GPU')}</strong></div>
       <div class="gpu-metrics"><div><span>GPU use</span><strong>${Number.isFinite(Number(gpu.utilizationPercent)) ? `${gpu.utilizationPercent}%` : '—'}</strong></div><div><span>VRAM</span><strong>${formatBytes(used)} <em>/ ${formatBytes(total)}</em></strong></div></div>
-      <div class="capacity-bar" aria-label="${memoryPercent}% of VRAM in use"><span style="--usage: ${memoryPercent}%"></span></div>
+      <div class="capacity-bar" aria-label="${memoryPercent}% of VRAM in use"><span style="--usage: ${memoryPercent / 100}"></span></div>
       <p class="gpu-meta">${formatBytes(free)} free${gpu.driverVersion ? ` · Driver ${escapeHTML(gpu.driverVersion)}` : ''}</p>`;
     container.append(card);
   });
@@ -62,15 +63,23 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   const dark = theme === 'dark';
   const toggle = document.querySelector('#theme-toggle');
-  toggle.textContent = dark ? 'Light mode' : 'Dark mode';
+  toggle.querySelector('.theme-label').textContent = dark ? 'Light mode' : 'Dark mode';
   toggle.setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} mode`);
   toggle.setAttribute('aria-pressed', String(dark));
+  document.querySelector('meta[name="theme-color"]').content = dark ? '#07131f' : '#eef3f5';
   try { localStorage.setItem('tether-agent-theme', theme); } catch (_) { /* optional preference */ }
 }
 
 function report(message, error = false) {
   notice.textContent = message || '';
   notice.dataset.error = error ? 'true' : 'false';
+}
+
+function confirmRepair() {
+  repairDialog.showModal();
+  return new Promise(resolve => {
+    repairDialog.addEventListener('close', () => resolve(repairDialog.returnValue === 'confirm'), { once: true });
+  });
 }
 
 function renderChecklist(checklist) {
@@ -84,10 +93,6 @@ function renderChecklist(checklist) {
     item.className = `check ${check.status}`;
     item.style.setProperty('--index', index);
 
-    const number = document.createElement('span');
-    number.className = 'check-number';
-    number.textContent = String(index + 1).padStart(2, '0');
-
     const content = document.createElement('div');
     content.className = 'check-content';
     const title = document.createElement('h3');
@@ -99,7 +104,7 @@ function renderChecklist(checklist) {
     const status = document.createElement('span');
     status.className = 'status-label';
     status.textContent = check.status === 'finished' ? 'Finished' : check.status === 'started' ? 'In progress' : 'Not started';
-    item.append(number, content, status);
+    item.append(content, status);
     list.append(item);
   });
 
@@ -107,7 +112,7 @@ function renderChecklist(checklist) {
   const progress = checklist.length ? Math.round((finished / checklist.length) * 100) : 0;
   document.querySelector('#progress-count').textContent = `${finished}/${checklist.length}`;
   document.querySelector('#progress-caption').textContent = checklist.length ? `${progress}% complete` : 'No checks available';
-  document.querySelector('#progress-bar').style.setProperty('--progress', `${progress}%`);
+  document.querySelector('#progress-bar').style.setProperty('--progress', String(progress / 100));
 }
 
 function updatePanels(state) {
@@ -151,6 +156,7 @@ async function refresh() {
   try {
     const state = await api().State();
     const localSetupComplete = state.configured && state.bootstrapReady;
+    document.body.dataset.readiness = state.ready ? 'ready' : state.provisioning ? 'provisioning' : localSetupComplete ? 'pairing' : 'setup';
     const headline = state.ready ? 'This GPU node is ready.' : state.provisioning ? 'Setting up this GPU node.' : localSetupComplete ? 'This GPU node is set up.' : 'This GPU node needs a few things.';
     document.querySelector('#headline').textContent = headline;
     document.querySelector('#machine-state').textContent = state.ready ? 'Ready' : state.provisioning ? 'Setup in progress' : localSetupComplete ? 'Pairing required' : 'Setup required';
@@ -195,7 +201,7 @@ document.querySelectorAll('#open-pair').forEach(button => button.addEventListene
   catch (error) { report(error.message || String(error), true); }
 }));
 document.querySelector('#reset-pairing').addEventListener('click', async () => {
-  if (!window.confirm('Re-pair with a different Orchestrator? This stops the Agent, deletes its current key, certificate, and saved Orchestrator trust record, then shows a new one-time code.')) return;
+  if (!await confirmRepair()) return;
   try { await api().ResetPairing(); await refresh(); }
   catch (error) { report(error.message || String(error), true); }
 });

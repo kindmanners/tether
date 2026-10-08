@@ -15,6 +15,12 @@ detail.
 | [Linux GPU-node bootstrap](linux-gpu-node-bootstrap.md) | prepare a Linux node for CUDA RPC inference |
 | [Security policy](../SECURITY.md) | understand RPC trust boundaries or report a vulnerability privately |
 
+## Run records
+
+- [Distributed acceptance run — 2026-10-07](distributed-acceptance-2026-10-07.md)
+  records the Wayfarer, Ataraxia, and Mathesis test results, pause state, and
+  remaining recovery checks.
+
 ## Documentation conventions
 
 Keep this directory focused on operator and integration guidance. Put a short

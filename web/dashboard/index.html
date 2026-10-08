@@ -5,110 +5,112 @@
   it under the terms of the GNU Affero General Public License as
   published by the Free Software Foundation, either version 3 of the
   License, or (at your option) any later version.
-
-  This program is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-  GNU Affero General Public License for more details.
-
-  You should have received a copy of the GNU Affero General Public License
-  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 -->
 
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#ffffff">
-    <title>Tether — Cluster</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#eef3f5">
+    <title>Tether — Cluster overview</title>
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <main class="shell">
-      <aside class="index-rail" aria-label="Cluster index">
-        <a class="wordmark" href="#top" aria-label="Tether cluster overview">TETHER</a>
-        <p class="rail-label">CLUSTER</p>
-        <p class="cluster-index" aria-hidden="true">01</p>
-        <p class="rail-note">Distributed local inference</p>
-      </aside>
+    <a class="skip-link" href="#cluster-overview">Skip to cluster overview</a>
 
-      <section class="content" id="top">
-        <header class="masthead">
-          <div>
-            <p class="eyebrow">Orchestrator overview</p>
-            <h1>Cluster<br>status</h1>
-          </div>
-          <div class="refresh-area">
-            <p id="last-updated" class="last-updated">Loading cluster data</p>
-            <div class="header-actions">
-              <button id="theme-toggle" type="button" aria-pressed="false">Dark mode</button>
-              <button id="refresh" type="button">Refresh</button>
+    <header class="topbar">
+      <a class="wordmark" href="#cluster-overview" aria-label="Tether cluster overview">TETHER</a>
+      <span class="topbar-divider" aria-hidden="true"></span>
+      <p class="surface-label">Read-only cluster view</p>
+      <div class="topbar-actions">
+        <button id="theme-toggle" class="button button--quiet" type="button" aria-pressed="false">
+          <span class="button-icon theme-icon" aria-hidden="true"></span>
+          <span class="theme-label">Dark mode</span>
+        </button>
+        <button id="refresh" class="button button--primary" type="button">
+          <span class="button-icon refresh-icon" aria-hidden="true"></span>
+          <span>Refresh</span>
+        </button>
+        <p id="last-updated" class="last-updated">Loading cluster data</p>
+      </div>
+    </header>
+
+    <main id="cluster-overview" class="dashboard">
+      <section class="overview" aria-labelledby="page-title">
+        <div class="overview-copy">
+          <h1 id="page-title">Your cluster, at a glance</h1>
+          <p class="live-line"><span class="state-dot" aria-hidden="true"></span><strong id="overview-state">Loading</strong><span id="overview-time">Connecting to the dashboard API</span></p>
+          <p id="pool-summary" class="pool-summary">Calculating pooled capacity.</p>
+          <p class="overview-description">Tether connects trusted Tailnet machines into one distributed pool. This view reports capacity, node health, and model placement; operations stay in the desktop app.</p>
+        </div>
+
+        <article class="capacity-panel" aria-labelledby="capacity-title">
+          <div class="capacity-heading-row">
+            <h2 id="capacity-title">Cluster capacity</h2>
+            <div class="capacity-legend" aria-label="Capacity legend">
+              <span><i class="legend-chip legend-chip--allocated" aria-hidden="true"></i>Allocated <strong id="vram-used">—</strong></span>
+              <span><i class="legend-chip legend-chip--free" aria-hidden="true"></i>Free <strong id="vram-free">—</strong></span>
+              <span>Total <strong id="vram-total">—</strong></span>
             </div>
           </div>
-        </header>
-        <p id="data-freshness" class="data-freshness" role="status">Loading the read-only diagnostic view.</p>
 
-        <section class="summary-grid" aria-label="Cluster summary">
-          <article class="summary-cell">
-            <p class="metric-label">Nodes</p>
-            <p id="node-count" class="metric-value">—</p>
-            <p id="node-summary" class="metric-detail">Loading</p>
-          </article>
-          <article class="summary-cell">
-            <p class="metric-label">Total VRAM</p>
-            <p id="vram-total" class="metric-value">—</p>
-            <p id="vram-summary" class="metric-detail">Loading</p>
-          </article>
-          <article class="summary-cell">
-            <p class="metric-label">Models</p>
-            <p id="model-count" class="metric-value">—</p>
-            <p id="model-summary" class="metric-detail">Loading</p>
-          </article>
-        </section>
-
-        <section class="panel nodes-panel" aria-labelledby="nodes-heading">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Tailnet nodes</p>
-              <h2 id="nodes-heading">Compute contributors</h2>
+          <div id="capacity-visual" class="capacity-visual" role="img" aria-label="Loading pooled GPU capacity">
+            <div class="seam seam--allocated" aria-hidden="true">
+              <span class="stratum stratum--one"></span>
+              <span class="stratum stratum--two"></span>
+              <span class="stratum stratum--three"></span>
             </div>
-            <p id="node-source" class="source-note"></p>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Node</th>
-                  <th scope="col">GPU</th>
-                  <th scope="col">VRAM</th>
-                  <th scope="col">Local RPC port</th>
-                  <th scope="col">Agent</th>
-                </tr>
-              </thead>
-              <tbody id="nodes-body"></tbody>
-            </table>
-          </div>
-          <p id="node-empty" class="empty-state" hidden>No Tether nodes are available in this view.</p>
-        </section>
-
-        <section class="panel models-panel" aria-labelledby="models-heading">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Orchestrator library</p>
-              <h2 id="models-heading">Available models</h2>
+            <div class="seam seam--free" aria-hidden="true">
+              <span class="stratum stratum--one"></span>
+              <span class="stratum stratum--two"></span>
+              <span class="stratum stratum--three"></span>
             </div>
-            <p id="model-source" class="source-note"></p>
+            <span class="refresh-wave" aria-hidden="true"></span>
+            <p class="capacity-value capacity-value--allocated"><strong id="capacity-used-value">—</strong><span>allocated</span></p>
+            <p class="capacity-value capacity-value--free"><strong id="capacity-free-value">—</strong><span>free</span></p>
           </div>
-          <div id="models-list" class="models-list"></div>
-          <p id="model-empty" class="empty-state" hidden>No GGUF models were reported by the orchestrator.</p>
-        </section>
 
-        <footer class="footer-note">
-          <p>The Tether desktop Orchestrator is the primary operations surface. This browser dashboard is read-only; node control stays on the pinned-mTLS Tether Agent channel.</p>
-        </footer>
+          <div id="capacity-contributors" class="capacity-contributors" aria-label="Capacity by node"></div>
+
+          <dl class="summary-list" aria-label="Cluster summary">
+            <div><dt>Nodes</dt><dd><strong id="node-count">—</strong><span id="node-summary">Loading</span></dd></div>
+            <div><dt>Total VRAM</dt><dd><strong id="vram-total-summary">—</strong><span id="vram-summary">Loading</span></dd></div>
+            <div><dt>Models</dt><dd><strong id="model-count">—</strong><span id="model-summary">Loading</span></dd></div>
+          </dl>
+
+          <p id="data-freshness" class="data-freshness" role="status">Loading the read-only diagnostic view.</p>
+        </article>
+      </section>
+
+      <section class="data-panel nodes-panel" aria-labelledby="nodes-heading">
+        <div class="panel-heading">
+          <div><h2 id="nodes-heading">Compute contributors</h2><p>Machines contributing GPU memory to this cluster.</p></div>
+          <p id="node-source" class="source-note"></p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Node</th><th scope="col">GPU</th><th scope="col">VRAM</th><th scope="col">Local RPC</th><th scope="col">Agent</th></tr></thead>
+            <tbody id="nodes-body"></tbody>
+          </table>
+        </div>
+        <p id="node-empty" class="empty-state" hidden>No Tether nodes are available in this view.</p>
+      </section>
+
+      <section class="data-panel models-panel" aria-labelledby="models-heading">
+        <div class="panel-heading">
+          <div><h2 id="models-heading">Available models</h2><p>GGUF inventory and current placement across the cluster.</p></div>
+          <p id="model-source" class="source-note"></p>
+        </div>
+        <div id="models-list" class="models-list"></div>
+        <p id="model-empty" class="empty-state" hidden>No GGUF models were reported by the orchestrator.</p>
       </section>
     </main>
+
+    <footer class="footer-note">
+      <p><strong>Diagnostic surface only.</strong> Node control remains on the pinned-mTLS Tether Agent channel in the desktop Orchestrator.</p>
+      <a href="#cluster-overview">Back to top <span aria-hidden="true">↑</span></a>
+    </footer>
     <script src="app.js"></script>
   </body>
 </html>

@@ -1,19 +1,4 @@
-/*
- * Copyright (C) 2026 kindmanners on github
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as
- * published by the Free Software Foundation, either version 3 of the
- * License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
+/* Copyright (C) 2026 kindmanners on github — AGPL-3.0-or-later */
 
 const fallbackDashboard = {
   source: "Recorded handoff snapshot; connect the dashboard API for live status.",
@@ -59,9 +44,9 @@ function modelStateClass(state) {
 function setTheme(theme) {
   const isDark = theme === "dark";
   document.documentElement.dataset.theme = theme;
-  document.querySelector('meta[name="theme-color"]').content = isDark ? "#000000" : "#ffffff";
+  document.querySelector('meta[name="theme-color"]').content = isDark ? "#07131f" : "#eef3f5";
   const toggle = byId("theme-toggle");
-  toggle.textContent = isDark ? "Light mode" : "Dark mode";
+  toggle.querySelector(".theme-label").textContent = isDark ? "Light mode" : "Dark mode";
   toggle.setAttribute("aria-pressed", String(isDark));
   toggle.setAttribute("aria-label", `Switch to ${isDark ? "light" : "dark"} mode`);
   localStorage.setItem("tether-theme", theme);
@@ -69,8 +54,7 @@ function setTheme(theme) {
 
 function initializeTheme() {
   const savedTheme = localStorage.getItem("tether-theme");
-  const systemPrefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  setTheme(savedTheme || (systemPrefersDark ? "dark" : "light"));
+  setTheme(savedTheme || "light");
 }
 
 function gibibytes(bytes) {
@@ -91,6 +75,32 @@ async function fetchDashboard() {
   return response.json();
 }
 
+function shortGPUName(value) {
+  return String(value || "GPU not reported").replace(/^NVIDIA\s+(GeForce\s+)?/i, "");
+}
+
+function renderCapacity(nodes, totalVRAM, freeVRAM) {
+  const usedVRAM = Math.max(0, totalVRAM - freeVRAM);
+  const ratio = totalVRAM > 0 ? Math.min(82, Math.max(18, (usedVRAM / totalVRAM) * 100)) : 50;
+  const visual = byId("capacity-visual");
+  visual.style.setProperty("--allocated-ratio", `${ratio}%`);
+  visual.setAttribute("aria-label", `${gibibytes(usedVRAM)} allocated and ${gibibytes(freeVRAM)} free across ${nodes.length} nodes`);
+  byId("capacity-used-value").textContent = gibibytes(usedVRAM);
+  byId("capacity-free-value").textContent = gibibytes(freeVRAM);
+  byId("vram-used").textContent = gibibytes(usedVRAM);
+  byId("vram-free").textContent = gibibytes(freeVRAM);
+
+  const contributors = byId("capacity-contributors");
+  contributors.replaceChildren();
+  contributors.style.setProperty("--node-columns", Math.max(1, nodes.length));
+  for (const node of nodes) {
+    const item = document.createElement("p");
+    item.className = "contributor";
+    item.innerHTML = `<strong>${escapeText(node.hostname)}</strong> · ${escapeText(shortGPUName(node.gpuModel))} · ${escapeText(gibibytes(node.vramTotalBytes))}`;
+    contributors.append(item);
+  }
+}
+
 function renderNodes(nodes) {
   const body = byId("nodes-body");
   const empty = byId("node-empty");
@@ -105,11 +115,11 @@ function renderNodes(nodes) {
     const agent = node.agentStatus || agentPort;
     const role = node.isOrchestrator ? '<span class="node-role">Orchestrator</span>' : "";
     row.innerHTML = `
-      <td>${escapeText(node.hostname)}${role}<span class="node-detail"><span class="state ${stateClass(status)}">${escapeText(status)}</span></span></td>
-      <td>${escapeText(node.gpuModel || "Not reported")}<span class="node-detail">${escapeText(node.note || "")}</span></td>
-      <td>${gibibytes(node.vramTotalBytes)}<span class="node-detail">${node.vramFreeBytes ? `${gibibytes(node.vramFreeBytes)} free` : "Free VRAM not reported"}</span></td>
-      <td>${escapeText(endpoint)}</td>
-      <td>${escapeText(agent)}<span class="node-detail">${escapeText(node.agentStatus ? agentPort : "")}</span></td>`;
+      <td data-label="Node">${escapeText(node.hostname)}${role}<span class="node-detail"><span class="state ${stateClass(status)}">${escapeText(status)}</span></span></td>
+      <td data-label="GPU">${escapeText(node.gpuModel || "Not reported")}<span class="node-detail">${escapeText(node.note || "")}</span></td>
+      <td data-label="VRAM">${gibibytes(node.vramTotalBytes)}<span class="node-detail">${node.vramFreeBytes ? `${gibibytes(node.vramFreeBytes)} free` : "Free VRAM not reported"}</span></td>
+      <td data-label="Local RPC">${escapeText(endpoint)}</td>
+      <td data-label="Agent">${escapeText(agent)}<span class="node-detail">${escapeText(node.agentStatus ? agentPort : "")}</span></td>`;
     body.append(row);
   }
 }
@@ -155,23 +165,30 @@ function render(data, isFallback) {
   const online = nodes.filter((node) => node.status === "online" || node.status === "verified").length;
 
   byId("node-count").textContent = String(nodes.length);
-  byId("node-summary").textContent = isFallback ? `${nodes.length} recorded nodes — snapshot` : `${online} online or verified`;
+  byId("node-summary").textContent = isFallback ? `${nodes.length} recorded` : `${online} available`;
   byId("vram-total").textContent = gibibytes(totalVRAM);
-  byId("vram-summary").textContent = reportedFree ? `${gibibytes(reportedFree)} free reported` : "Free VRAM not reported";
+  byId("vram-total-summary").textContent = gibibytes(totalVRAM);
+  byId("vram-summary").textContent = reportedFree ? `${gibibytes(reportedFree)} free` : "Free not reported";
   byId("model-count").textContent = String(models.length);
-  byId("model-summary").textContent = models.length === 1 ? "GGUF model listed" : "GGUF models listed";
+  byId("model-summary").textContent = models.length === 1 ? "GGUF model" : "GGUF models";
+  byId("pool-summary").textContent = totalVRAM > 0
+    ? `${nodes.length} ${nodes.length === 1 ? "node contributes" : "nodes pool"} ${gibibytes(totalVRAM)} for local inference.`
+    : `VRAM capacity has not been reported for ${nodes.length} ${nodes.length === 1 ? "node" : "nodes"}.`;
   byId("node-source").textContent = data.source || "Live Tether registry and Agent data";
   const modelSource = data.modelSource || data.source || "Live orchestrator model inventory";
-  byId("model-source").textContent = data.modelStateError
-    ? `${modelSource} · Worker state unavailable: ${data.modelStateError}`
-    : modelSource;
-  byId("last-updated").textContent = displayTime(data.observedAt || new Date().toISOString(), isFallback);
+  byId("model-source").textContent = data.modelStateError ? `${modelSource} · Worker state unavailable` : modelSource;
+  const updated = displayTime(data.observedAt || new Date().toISOString(), isFallback);
+  byId("last-updated").textContent = updated;
+  byId("overview-time").textContent = updated;
+  byId("overview-state").textContent = isFallback ? "Snapshot" : "Live";
   document.body.dataset.dataMode = isFallback ? "snapshot" : "live";
   byId("data-freshness").textContent = isFallback
-    ? "Offline — showing a recorded handoff snapshot, not current cluster data. Use Tether desktop for operations."
+    ? "Offline: showing a recorded handoff snapshot, not current cluster data. Use Tether desktop for operations."
     : data.modelStateError
-      ? `Live cluster inventory; model worker state is unavailable: ${data.modelStateError}`
-      : "Live read-only diagnostic view. Use Tether desktop for operations.";
+      ? `Live cluster inventory; ${data.modelStateError}`
+      : "Live read-only diagnostics. Use Tether desktop for operations.";
+
+  renderCapacity(nodes, totalVRAM, reportedFree);
   renderNodes(nodes);
   renderModels(models, data.modelStateError);
 }
@@ -179,15 +196,17 @@ function render(data, isFallback) {
 async function refresh() {
   const button = byId("refresh");
   button.disabled = true;
-  button.textContent = "Refreshing";
+  button.querySelector("span:last-child").textContent = "Refreshing";
+  document.body.classList.add("is-refreshing");
   try {
     render(await fetchDashboard(), false);
   } catch (error) {
     render(fallbackDashboard, true);
-    byId("data-freshness").textContent = `Offline — ${error.message || 'the dashboard API could not be reached'}. Showing a recorded handoff snapshot, not current cluster data.`;
+    byId("data-freshness").textContent = `Offline: ${error.message || "the dashboard API could not be reached"}. Showing a recorded handoff snapshot, not current cluster data.`;
   } finally {
+    window.setTimeout(() => document.body.classList.remove("is-refreshing"), 760);
     button.disabled = false;
-    button.textContent = "Refresh";
+    button.querySelector("span:last-child").textContent = "Refresh";
   }
 }
 
@@ -196,5 +215,6 @@ byId("theme-toggle").addEventListener("click", () => {
   const nextTheme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   setTheme(nextTheme);
 });
+
 initializeTheme();
 refresh();
