@@ -235,7 +235,7 @@ td:first-child { font-weight: 720; }
 .state, .model-state { color: var(--ink-soft); font-size: 0.76rem; font-weight: 720; text-transform: capitalize; }
 .state::before, .model-state::before { display: inline-block; width: 0.52rem; height: 0.52rem; margin: 0 0.42rem 0.04rem 0; border-radius: 50%; background: currentColor; content: ""; }
 .state--online, .model-state--loaded { color: var(--lichen); }
-.state--offline, .model-state--loading, .model-state--idle-countdown { color: var(--coral); }
+.state--offline, .model-state--loading, .model-state--idle-countdown, .model-state--failed, .model-state--crashed { color: var(--coral); }
 body[data-data-mode="snapshot"] .state--online, body[data-data-mode="snapshot"] .model-state--loaded { color: var(--ink-soft); }
 
 .models-list { border-top: 1px solid var(--line); }

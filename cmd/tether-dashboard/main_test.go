@@ -134,7 +134,7 @@ func TestFetchModelStates(t *testing.T) {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
 		authorization <- r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"models":[{"model":"one","state":"idle-countdown","nodes":["mathesis"]}]}`))
+		_, _ = w.Write([]byte(`{"models":[{"model":"one","state":"failed","nodes":["mathesis"],"detail":"Agent mathesis did not respond"}]}`))
 	}))
 	defer server.Close()
 	states, err := fetchModelStates(server.URL+"/api/v1/model-states", "dashboard-secret")
@@ -145,7 +145,7 @@ func TestFetchModelStates(t *testing.T) {
 		t.Fatalf("Authorization = %q, want Bearer token", got)
 	}
 	state, ok := states["one"]
-	if !ok || state.State != "idle-countdown" || len(state.Nodes) != 1 || state.Nodes[0] != "mathesis" {
+	if !ok || state.State != "failed" || len(state.Nodes) != 1 || state.Nodes[0] != "mathesis" || state.Detail != "Agent mathesis did not respond" {
 		t.Fatalf("unexpected model states: %#v", states)
 	}
 }

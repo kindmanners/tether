@@ -22,4 +22,9 @@ func TestAgentFrontendUsesProtectedRepairDialog(t *testing.T) {
 	if strings.Contains(string(javascript), "window.confirm") {
 		t.Fatal("agent frontend must not use the browser confirm prompt")
 	}
+	for _, expected := range []string{"Orchestrator Not Available", "refreshTimer = setTimeout(refresh, refreshDelay)"} {
+		if !strings.Contains(string(javascript), expected) {
+			t.Errorf("agent frontend is missing load-liveness UI behavior %q", expected)
+		}
+	}
 }

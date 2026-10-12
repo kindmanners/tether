@@ -39,4 +39,7 @@ func TestOrchestratorUsesInAppConfirmationDialogs(t *testing.T) {
 	if strings.Contains(string(javascript), "window.confirm") {
 		t.Fatal("orchestrator UI still uses a browser confirmation box")
 	}
+	if !strings.Contains(string(javascript), "Agent not responding") {
+		t.Fatal("orchestrator UI must prioritize an unresponsive Agent over Tailnet online state")
+	}
 }

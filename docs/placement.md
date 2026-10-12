@@ -35,6 +35,23 @@ are already loaded continue while another model is loading. Whole-model local
 placements are pinned to the selected CUDA device; local CUDA devices are
 hidden when a plan uses only remote GPUs.
 
+While a remote model is loading, the gateway sends an authenticated liveness
+pulse to every Agent participating in that placement every 20 seconds. Each
+Agent returns an application-level pong over the exact certificate-pinned mTLS
+channel and arms a load-scoped watchdog. After one missed response, Tether
+waits 30 seconds and confirms that Agent once more. A second miss cancels the
+entire load, kills the Orchestrator-side `llama-server`, closes every tunnel,
+and records the unresponsive Agent in model state. Tether does not continue a
+partial placement on the remaining GPUs.
+
+The Agent watchdog also protects the reverse direction. If the loading
+gateway disappears and stops renewing the load session, the Agent marks the
+Orchestrator unavailable and stops its managed `ggml-rpc-server`, closing RPC
+leases and reclaiming remote GPU allocations. The desktop-owned gateway is
+bound to the desktop process lifetime so an abrupt Orchestrator exit also
+stops those renewals. These checks are load-scoped; steady-state inference
+continues to use RPC connection failure and worker-process supervision.
+
 ## Performance expectations
 
 Tether's primary performance benefit is capacity: several GPUs can hold a

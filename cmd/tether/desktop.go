@@ -363,6 +363,9 @@ func (a *OrchestratorApp) probeNodes(view []DesktopNode, nodes []*registry.Node,
 						log.Printf("orchestrator: agent heartbeat host=%q timestamp=%s latency_ms=%d error=%q", node.Hostname, item.PingAt, item.PingMS, statusErr)
 					} else {
 						item.AgentStatus, item.Detail = status.Status, status.LastError
+						if status.OrchestratorStatus == "Unavailable" {
+							item.Detail = status.OrchestratorDetail
+						}
 						if capabilities, capabilitiesErr := client.GetCapabilitiesContext(ctx, agentAddress(node)); capabilitiesErr == nil {
 							item.GPUHistory = a.recordNodeUsage(node.Hostname, checkedAt, capabilities.GPUs)
 						} else {
@@ -673,7 +676,11 @@ func (a *OrchestratorApp) command(hostname string, command func(*agent.Client, s
 	if err != nil {
 		return nil, fmt.Errorf("sending command to %s: %w", hostname, err)
 	}
-	return &DesktopNode{Hostname: node.Hostname, Address: node.TailscaleIP, Tailnet: node.Status.String(), Paired: true, AgentStatus: status.Status, Detail: status.LastError, RPCPort: node.RPCPort}, nil
+	detail := status.LastError
+	if status.OrchestratorStatus == "Unavailable" {
+		detail = status.OrchestratorDetail
+	}
+	return &DesktopNode{Hostname: node.Hostname, Address: node.TailscaleIP, Tailnet: node.Status.String(), Paired: true, AgentStatus: status.Status, Detail: detail, RPCPort: node.RPCPort}, nil
 }
 
 func (a *OrchestratorApp) nodeStatus(hostname string) (*DesktopNode, error) {
@@ -769,7 +776,8 @@ func (a *OrchestratorApp) StartGateway() error {
 		return fmt.Errorf("opening gateway log: %w", err)
 	}
 	command.Stdout, command.Stderr = logFile, logFile
-	if err := command.Start(); err != nil {
+	releaseLifetime, err := executil.StartWithParentLifetime(command)
+	if err != nil {
 		logFile.Close()
 		return fmt.Errorf("starting local gateway: %w", err)
 	}
@@ -782,6 +790,7 @@ func (a *OrchestratorApp) StartGateway() error {
 	a.mu.Unlock()
 	go func() {
 		waitErr := command.Wait()
+		releaseLifetime()
 		a.mu.Lock()
 		if a.gateway == command {
 			a.gateway = nil

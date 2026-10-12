@@ -365,7 +365,9 @@ func dashboardNodeFromRegistry(identity *certs.Identity, node *registry.Node) da
 		result.Note = "Tether Agent did not respond"
 	} else {
 		result.AgentStatus = status.Status
-		if status.LastError != "" {
+		if status.OrchestratorStatus == "Unavailable" {
+			result.Note = status.OrchestratorDetail
+		} else if status.LastError != "" {
 			result.Note = "Last RPC error: " + status.LastError
 		}
 	}
