@@ -656,10 +656,7 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 	executil.IsolateProcessTree(cmd)
 	cmd.Cancel = func() error { return executil.KillProcessTree(cmd) }
 	cmd.WaitDelay = 5 * time.Second
-	cmd.Env = append(os.Environ(), "LLAMA_API_KEY="+apiKey)
-	if !planUsesLocalGPU(plan) {
-		cmd.Env = append(cmd.Env, "CUDA_VISIBLE_DEVICES=", "GGML_CUDA_VISIBLE_DEVICES=")
-	}
+	cmd.Env = llamaServerEnvironment(os.Environ(), apiKey, planUsesLocalGPU(plan))
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	releaseLifetime, err := executil.StartWithParentLifetime(cmd)
 	if err != nil {
