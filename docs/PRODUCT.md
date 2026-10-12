@@ -1,6 +1,5 @@
 # Product
 
-<!-- impeccable:product-schema 1 -->
 
 ## Platform
 
@@ -8,55 +7,48 @@ web
 
 ## Users
 
-- **Inferred for this session:** A technically proficient homelab owner or infrastructure operator checking a private multi-machine LLM cluster from a desktop or mobile browser.
-- **Open decision:** Whether the primary audience is an individual operator or a shared operations team.
+Primary users are technically proficient operators running local LLM inference across trusted machines on a Tailscale network. The Orchestrator is used during setup and active operation to pair nodes, prepare backends, manage the local gateway, and place models.
 
 ## Product Purpose
 
-Tether is a desktop control plane for distributed local LLM inference across trusted machines on a private Tailscale network. The browser dashboard is a read-only diagnostic surface for quickly understanding cluster availability, pooled VRAM, node health, and model lifecycle state; operational control remains in the desktop Orchestrator.
-
-Success means an operator can distinguish live data from a recorded fallback snapshot, identify unavailable compute, and understand the cluster's usable model capacity without mistaking the dashboard for a control surface.
+Tether combines GPU memory from allowlisted Tailnet machines so local models can be placed and served through one OpenAI-compatible endpoint. Success means an operator can understand readiness, establish trust, start the required services, and manage model lifecycle without confusing capacity pooling with faster inference.
 
 ## Positioning
 
-Tether pools GPU memory across trusted physical devices through llama.cpp RPC so operators can run models or contexts that do not fit on one GPU without using cloud inference. It promises additional capacity, not automatic speed.
+Tether is a private, pinned-mTLS control plane for pooled local GPU capacity. It coordinates trusted machines; it does not claim to combine their compute into a single faster GPU.
 
 ## Operating Context
 
-- Private Tailnet with a desktop Orchestrator and paired GPU Agents.
-- Read-only browser dashboard used for at-a-glance diagnostics on desktop, tablet, or phone.
-- Live dashboard data may be unavailable, in which case the surface shows an explicitly labeled recorded snapshot.
-- Operators use node identity, GPU model, VRAM, local RPC and Agent ports, Agent state, and model placement/lifecycle data to diagnose the cluster.
+The desktop Orchestrator is the operational surface. It manages the local gateway, this machine's GPU contribution, Tailnet allowlisting, one-time-code pairing, remote RPC lifecycle, model downloads, placement review, loading, and unloading. The separate browser dashboard remains diagnostic and read-only.
 
 ## Capabilities and Constraints
 
-- Preserve the existing dashboard data model, refresh action, theme preference, live/snapshot distinction, nodes table, model inventory, and empty states.
-- The dashboard must not imply that it can start, stop, pair, or otherwise control nodes.
-- Tether currently supports NVIDIA/CUDA GPU Agents on Windows and Linux; macOS, AMD/ROCm, Intel GPU, and Apple Metal workers are not supported by managed setup flows.
-- Security language must preserve that paired nodes and local processes are trusted and that pinned mTLS reduces exposure without turning llama.cpp RPC into a sandbox.
-- **Inferred for this session:** Existing factual content and behavior are fixed; labels and hierarchy may be clarified where they do not alter meaning.
+- Wails desktop application with embedded static HTML, CSS, and JavaScript.
+- Preserve the existing Go binding contract and all element IDs used by `cmd/tether/frontend/dist/app.js`.
+- Operational or destructive actions retain their confirmation dialogs and explanatory copy.
+- Live status, unavailable data, background preparation, download progress, empty states, and errors must remain explicit in words as well as color.
+- Light and dark themes are supported.
+- The interface must remain usable from a 320px-wide viewport upward.
 
 ## Brand Commitments
 
-- Product name: Tether.
-- Voice: technically precise, direct, restrained, and honest about limitations.
-- Avoid cloud-service framing, invented performance claims, or language that suggests automatic speedups.
+Use the approved Tether Capacity Survey language established by the web dashboard: Assistant typography, pale stone and deep mineral surfaces, navy/glacial capacity colors, lichen health, oxidized-coral attention states, broad survey panels, soft 10–14px corners, and restrained motion.
 
 ## Evidence on Hand
 
-- Product and security facts: `README.md`.
-- Dashboard implementation and real field vocabulary: `web/dashboard/index.html`, `web/dashboard/app.js`, and `web/dashboard/styles.css`.
-- A single recorded fallback node and model exist in `web/dashboard/app.js`; these are diagnostic sample data, not a customer claim.
-- No logo artwork, photography, testimonials, customer list, or commercial proof assets are present and none should be fabricated.
+- Product and security behavior: `README.md`, `docs/README.md`, and Go implementation.
+- Operational UI and interaction contract: `cmd/tether/frontend/dist/`.
+- Approved visual reference: `web/dashboard/` and `.impeccable/design.json`.
+- No external marketing claims, customer evidence, or performance benchmarks are supplied; do not fabricate them.
 
 ## Product Principles
 
-1. Capacity over hype: show what the cluster can hold without implying guaranteed acceleration.
-2. Trust through legibility: make live, stale, unavailable, and transitional states unmistakable.
-3. Read-only means read-only: keep diagnostics rich while reserving control for the desktop Orchestrator.
-4. Local-first privacy: reflect the private, operator-owned network context without claiming sandbox-level isolation.
-5. Useful at a glance, complete on demand: prioritize cluster health while keeping the underlying technical detail accessible.
+- Make trust and operational state obvious before offering an action.
+- Show pooled capacity as a system, then expose the machines and records beneath it.
+- Preserve a strict distinction between diagnostic visibility and operational control.
+- Prefer working, reversible controls and explicit consequences over decorative chrome.
+- Treat missing information as unknown, never as zero or healthy.
 
 ## Accessibility & Inclusion
 
-- **Inferred for this session:** Meet modern web accessibility expectations, including keyboard operability, visible focus, meaningful status text beyond color, 44px touch targets, responsive reflow, and an intentional reduced-motion experience.
+Keyboard navigation, visible focus, semantic status updates, reduced-motion support, non-color state labels, and touch-sized controls are required.
