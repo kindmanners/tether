@@ -42,22 +42,26 @@ import (
 )
 
 type gatewayConfig struct {
-	modelsDir          string
-	llamaServer        string
-	agentSelection     agentSelection
-	allowlistPath      string
-	apiKey             string
-	ctxSize            int
-	parallel           int
-	idleTimeout        time.Duration
-	workerStartTimeout time.Duration
-	localGPU           bool
-	modelOverhead      float64
-	kvBytesPerToken    int64
-	requestShutdown    func()
-	planner            func(string) (placement.Plan, error)
-	launcher           func(context.Context, string, string, placement.Plan) (*modelWorker, error)
-	tunnelFactory      func(context.Context, placement.Node) (workerTunnel, error)
+	modelsDir                 string
+	llamaServer               string
+	agentSelection            agentSelection
+	allowlistPath             string
+	apiKey                    string
+	ctxSize                   int
+	parallel                  int
+	idleTimeout               time.Duration
+	workerStartTimeout        time.Duration
+	localGPU                  bool
+	modelOverhead             float64
+	kvBytesPerToken           int64
+	requestShutdown           func()
+	planner                   func(string) (placement.Plan, error)
+	launcher                  func(context.Context, string, string, placement.Plan) (*modelWorker, error)
+	tunnelFactory             func(context.Context, placement.Node) (workerTunnel, error)
+	loadLivenessProbe         loadLivenessProbe
+	loadHeartbeatInterval     time.Duration
+	loadHeartbeatRetryDelay   time.Duration
+	loadHeartbeatProbeTimeout time.Duration
 }
 
 type modelWorker struct {
@@ -492,13 +496,18 @@ func (g *gateway) ensureWorkerLocked(ctx context.Context, modelID string, pin bo
 		g.setState(modelID, "unloaded", nil, err.Error())
 		return nil, err
 	}
+	g.setState(modelID, "loading", planNodeNames(plan), "Starting authenticated load-liveness monitoring.")
 	launcher := g.cfg.launcher
 	if launcher == nil {
 		launcher = g.launch
 	}
 	worker, err := launcher(ctx, modelID, path, plan)
 	if err != nil {
-		g.setState(modelID, "unloaded", planNodeNames(plan), err.Error())
+		state := "unloaded"
+		if isLoadLivenessFailure(err) {
+			state = "failed"
+		}
+		g.setState(modelID, state, planNodeNames(plan), err.Error())
 		return nil, err
 	}
 	worker.key = workerKey(modelID, plan)
@@ -605,15 +614,22 @@ func (g *gateway) unloadLocked(worker *modelWorker) bool {
 }
 
 func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan placement.Plan) (*modelWorker, error) {
+	monitor, loadCtx, err := g.startLoadMonitor(ctx, modelID, plan)
+	if err != nil {
+		return nil, err
+	}
+	if monitor != nil {
+		defer monitor.Abort()
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, fmt.Errorf("reserving worker port: %w", err)
+		return nil, confirmAgentOnLoadError(ctx, monitor, fmt.Errorf("reserving worker port: %w", err))
 	}
 	address := listener.Addr().String()
 	_ = listener.Close()
 	tunnels, endpoints, err := g.openWorkerTunnels(plan)
 	if err != nil {
-		return nil, err
+		return nil, confirmAgentOnLoadError(ctx, monitor, err)
 	}
 	closeTunnels := true
 	defer func() {
@@ -629,7 +645,7 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 	}
 	apiKey, err := randomToken(32)
 	if err != nil {
-		return nil, fmt.Errorf("creating model worker credential: %w", err)
+		return nil, confirmAgentOnLoadError(ctx, monitor, fmt.Errorf("creating model worker credential: %w", err))
 	}
 	for _, node := range plan.Nodes {
 		if node.Local && node.Device != "" && plan.Mode == "whole" {
@@ -640,14 +656,11 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 	executil.IsolateProcessTree(cmd)
 	cmd.Cancel = func() error { return executil.KillProcessTree(cmd) }
 	cmd.WaitDelay = 5 * time.Second
-	cmd.Env = append(os.Environ(), "LLAMA_API_KEY="+apiKey)
-	if !planUsesLocalGPU(plan) {
-		cmd.Env = append(cmd.Env, "CUDA_VISIBLE_DEVICES=", "GGML_CUDA_VISIBLE_DEVICES=")
-	}
+	cmd.Env = llamaServerEnvironment(os.Environ(), apiKey, planUsesLocalGPU(plan))
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	releaseLifetime, err := executil.StartWithParentLifetime(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("starting model worker: %w", err)
+		return nil, confirmAgentOnLoadError(ctx, monitor, fmt.Errorf("starting model worker: %w", err))
 	}
 	worker := &modelWorker{modelID: modelID, model: modelPath, plan: plan, address: address, cmd: cmd, done: make(chan struct{}), apiKey: apiKey, tunnels: tunnels}
 	go func() {
@@ -655,14 +668,34 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 		releaseLifetime()
 		close(worker.done)
 	}()
-	if err := waitForWorker(ctx, address, worker, g.cfg.workerStartTimeout); err != nil {
+	if err := waitForWorker(loadCtx, address, worker, g.cfg.workerStartTimeout); err != nil {
 		_ = executil.KillProcessTree(cmd)
 		<-worker.done
-		return nil, err
+		if cause := context.Cause(loadCtx); isLoadLivenessFailure(cause) {
+			return nil, cause
+		}
+		return nil, confirmAgentOnLoadError(ctx, monitor, err)
+	}
+	if monitor != nil {
+		if err := monitor.Complete(ctx); err != nil {
+			_ = executil.KillProcessTree(cmd)
+			<-worker.done
+			return nil, err
+		}
 	}
 	closeTunnels = false
 	log.Printf("loaded %s using %s placement on %s", modelID, plan.Mode, strings.Join(planNodeNames(plan), ", "))
 	return worker, nil
+}
+
+func confirmAgentOnLoadError(ctx context.Context, monitor *loadMonitor, fallback error) error {
+	if monitor == nil || ctx.Err() != nil || isLoadLivenessFailure(fallback) {
+		return fallback
+	}
+	if err := monitor.Confirm(ctx); isLoadLivenessFailure(err) {
+		return err
+	}
+	return fallback
 }
 
 func waitForWorker(ctx context.Context, address string, worker *modelWorker, timeout time.Duration) error {

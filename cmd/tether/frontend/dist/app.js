@@ -79,7 +79,10 @@ function relativeTime(timestamp) {
 
 function nodeState(node) {
   const tailnet = String(node.tailnet || 'Unknown');
-  if (tailnet !== 'Online' || !node.paired || !node.pingAt || node.agentStatus === 'Unreachable') {
+  if (node.agentStatus === 'Unreachable') {
+    return '<span class="state unreachable">Agent not responding</span>';
+  }
+  if (tailnet !== 'Online' || !node.paired || !node.pingAt) {
     return `<span class="state ${stateClass(tailnet)}">${escapeHTML(tailnet)}</span>`;
   }
   return `<span class="state online"><i aria-hidden="true"></i>Online <span>${wholeNumber(node.pingMs)} ms · ${relativeTime(node.pingAt)}</span></span>`;
@@ -280,7 +283,7 @@ async function refresh({ quiet = false } = {}) {
 
 
     const renderedNodes = state.nodes.length ? state.nodes.map((node, index) => `
-		<article class="node-card ${node.hostname === celebratingHost ? 'just-paired' : ''}" style="--index:${index}" data-hostname="${escapeHTML(node.hostname)}" data-state="${stateClass(node.tailnet)}">
+        <article class="node-card ${node.hostname === celebratingHost ? 'just-paired' : ''}" style="--index:${index}" data-hostname="${escapeHTML(node.hostname)}" data-state="${node.agentStatus === 'Unreachable' ? 'unreachable' : stateClass(node.tailnet)}">
         <div class="node-top">
           <div><h3>${escapeHTML(node.hostname)}</h3><p>${escapeHTML(node.address || 'No Tailnet address')}</p></div>
           ${nodeState(node)}
@@ -294,7 +297,7 @@ async function refresh({ quiet = false } = {}) {
         ${usageHistory(node)}
         <div class="card-actions">
           ${!node.paired && node.tailnet === 'Online' ? `<button data-pair="${escapeHTML(node.hostname)}">Pair node</button>` : ''}
-		  ${node.paired && node.tailnet === 'Online' ? `<button data-start="${escapeHTML(node.hostname)}" ${node.agentStatus === 'Running' ? 'disabled title="RPC server is already running"' : ''}>${node.agentStatus === 'Running' ? 'RPC running' : 'Start RPC'}</button><button class="secondary" data-stop="${escapeHTML(node.hostname)}">Stop RPC</button>` : ''}
+          ${node.paired && node.tailnet === 'Online' && node.agentStatus !== 'Unreachable' ? `<button data-start="${escapeHTML(node.hostname)}" ${node.agentStatus === 'Running' ? 'disabled title="RPC server is already running"' : ''}>${node.agentStatus === 'Running' ? 'RPC running' : 'Start RPC'}</button><button class="secondary" data-stop="${escapeHTML(node.hostname)}">Stop RPC</button>` : ''}
         </div>
       </article>`).join('') : '<p class="empty">No allowlisted nodes were found. Check Tailscale and the allowlist path.</p>';
     if (!nodes.contains(document.activeElement) && nodes.innerHTML !== renderedNodes) nodes.innerHTML = renderedNodes;

@@ -54,6 +54,7 @@ type AgentApp struct {
 	serviceDetail      string
 	serviceCancel      context.CancelFunc
 	serviceDone        chan struct{}
+	serviceServer      *agent.Server
 	heartbeatDetail    string
 	processManager     *process.Manager
 	provisioning       bool
@@ -90,6 +91,8 @@ type AgentSetupState struct {
 	ServiceRunning      bool              `json:"serviceRunning"`
 	ServiceDetail       string            `json:"serviceDetail"`
 	HeartbeatDetail     string            `json:"heartbeatDetail"`
+	OrchestratorStatus  string            `json:"orchestratorStatus,omitempty"`
+	OrchestratorDetail  string            `json:"orchestratorDetail,omitempty"`
 	CanProvision        bool              `json:"canProvision"`
 	Ready               bool              `json:"ready"`
 	Checklist           []AgentSetupCheck `json:"checklist"`
@@ -243,12 +246,27 @@ func (a *AgentApp) State() (*AgentSetupState, error) {
 	state.ServiceRunning = a.serviceRunning
 	state.ServiceDetail = a.serviceDetail
 	state.HeartbeatDetail = a.heartbeatDetail
+	serviceServer := a.serviceServer
 	state.Provisioning = a.provisioning
 	state.ProvisioningDetail = a.provisioningDetail
 	state.ProvisioningError = a.provisioningError
 	progressPath := a.progressPath
 	logPath := a.logPath
 	a.mu.Unlock()
+	if serviceServer != nil {
+		loadStatus := serviceServer.LoadLivenessStatus()
+		state.OrchestratorStatus = loadStatus.State
+		state.OrchestratorDetail = loadStatus.Detail
+		if loadStatus.Detail != "" && loadStatus.State != "Available" {
+			state.HeartbeatDetail = loadStatus.Detail
+		}
+		switch loadStatus.State {
+		case "Monitoring":
+			state.ModelStatus = "Loading " + loadStatus.Model + " under bidirectional liveness monitoring"
+		case "Unavailable":
+			state.ModelStatus = "Model loading stopped; managed RPC was terminated to reclaim GPU memory"
+		}
+	}
 	if progressPath == "" {
 		progressPath = defaultSetupProgressPath()
 	}
@@ -782,18 +800,23 @@ func (a *AgentApp) StartService() error {
 		return fail(fmt.Errorf("building pinned mTLS configuration: %w", err))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	commandServer := agent.NewServer(cfg, a.processManager)
 	a.mu.Lock()
 	a.serviceCancel = cancel
 	a.serviceDone = make(chan struct{})
+	a.serviceServer = commandServer
 	a.serviceDetail = fmt.Sprintf("Listening for the paired Orchestrator on TCP %d.", agentPort)
 	a.mu.Unlock()
 	go a.runHeartbeat(ctx)
 	go func() {
-		err := agent.NewServer(cfg, a.processManager).Start(ctx, fmt.Sprintf(":%d", agentPort), tlsConfig)
+		err := commandServer.Start(ctx, fmt.Sprintf(":%d", agentPort), tlsConfig)
 		_ = a.processManager.StopDefault()
 		a.mu.Lock()
 		a.serviceRunning = false
 		a.serviceCancel = nil
+		if a.serviceServer == commandServer {
+			a.serviceServer = nil
+		}
 		if a.serviceDone != nil {
 			close(a.serviceDone)
 			a.serviceDone = nil

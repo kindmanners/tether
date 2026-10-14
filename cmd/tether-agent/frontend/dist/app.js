@@ -153,14 +153,17 @@ function updatePanels(state) {
 
 async function refresh() {
   document.body.classList.add('is-refreshing');
+  let refreshDelay = 5000;
   try {
     const state = await api().State();
+    refreshDelay = state.provisioning || state.pairingActive ? 1000 : 5000;
     const localSetupComplete = state.configured && state.bootstrapReady;
+    const orchestratorUnavailable = state.orchestratorStatus === 'Unavailable';
     document.body.dataset.readiness = state.ready ? 'ready' : state.provisioning ? 'provisioning' : localSetupComplete ? 'pairing' : 'setup';
-    const headline = state.ready ? 'This GPU node is ready.' : state.provisioning ? 'Setting up this GPU node.' : localSetupComplete ? 'This GPU node is set up.' : 'This GPU node needs a few things.';
+    const headline = orchestratorUnavailable ? 'The Orchestrator is not responding.' : state.ready ? 'This GPU node is ready.' : state.provisioning ? 'Setting up this GPU node.' : localSetupComplete ? 'This GPU node is set up.' : 'This GPU node needs a few things.';
     document.querySelector('#headline').textContent = headline;
-    document.querySelector('#machine-state').textContent = state.ready ? 'Ready' : state.provisioning ? 'Setup in progress' : localSetupComplete ? 'Pairing required' : 'Setup required';
-    document.querySelector('#summary').textContent = state.ready ? 'No local setup is needed. Open Tether on the paired Orchestrator to use this GPU.' : state.provisioning ? (state.provisioningDetail || 'The audited setup is running. The active checklist item shows exactly what it is doing.') : localSetupComplete ? 'Audited local setup is complete. Pair this node with the Orchestrator to begin using its GPU.' : 'Nothing changes until you choose to run the audited local setup. Review the checklist first.';
+    document.querySelector('#machine-state').textContent = orchestratorUnavailable ? 'Orchestrator Not Available' : state.ready ? 'Ready' : state.provisioning ? 'Setup in progress' : localSetupComplete ? 'Pairing required' : 'Setup required';
+    document.querySelector('#summary').textContent = orchestratorUnavailable ? (state.orchestratorDetail || 'Model loading was stopped because the paired Orchestrator did not answer its confirmation check.') : state.ready ? 'No local setup is needed. Open Tether on the paired Orchestrator to use this GPU.' : state.provisioning ? (state.provisioningDetail || 'The audited setup is running. The active checklist item shows exactly what it is doing.') : localSetupComplete ? 'Audited local setup is complete. Pair this node with the Orchestrator to begin using its GPU.' : 'Nothing changes until you choose to run the audited local setup. Review the checklist first.';
     document.querySelector('#hostname').textContent = state.hostname || 'Tailscale unavailable';
     document.querySelector('#config').textContent = state.configurationNote;
     document.querySelector('#report').textContent = state.bootstrapNote;
@@ -172,14 +175,14 @@ async function refresh() {
     document.querySelector('#telemetry-updated').textContent = Number.isNaN(checkedAt.getTime()) ? 'Updated just now' : `Updated ${checkedAt.toLocaleTimeString()}`;
     renderChecklist(state.checklist || []);
     updatePanels(state);
-    if (state.provisioningError) report(state.provisioningError, true);
+    if (orchestratorUnavailable) report(state.orchestratorDetail || 'Orchestrator Not Available', true);
+    else if (state.provisioningError) report(state.provisioningError, true);
     else if (!state.provisioning) report('');
-    clearTimeout(refreshTimer);
-    if (state.provisioning || state.pairingActive) refreshTimer = setTimeout(refresh, 1000);
   } catch (error) {
     report(error.message || String(error), true);
-    clearTimeout(refreshTimer);
   } finally {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(refresh, refreshDelay);
     document.body.classList.remove('is-refreshing');
   }
 }

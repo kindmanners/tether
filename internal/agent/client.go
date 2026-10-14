@@ -34,8 +34,11 @@ const clientTimeout = 10 * time.Second
 // StatusResult mirrors statusResponse but exported, for callers outside
 // this package.
 type StatusResult struct {
-	Status    string
-	LastError string
+	Status             string
+	LastError          string
+	OrchestratorStatus string
+	OrchestratorDetail string
+	LoadingModel       string
 }
 
 // Client is the Orchestrator-side counterpart to Server — issues
@@ -227,5 +230,10 @@ func decodeStatus(resp *http.Response) (*StatusResult, error) {
 	if err := json.Unmarshal(bodyBytes, &okResp); err != nil {
 		return nil, fmt.Errorf("decoding agent response: %w", err)
 	}
-	return &StatusResult{Status: okResp.Status, LastError: okResp.LastError}, nil
+	return &StatusResult{
+		Status: okResp.Status, LastError: okResp.LastError,
+		OrchestratorStatus: okResp.OrchestratorStatus,
+		OrchestratorDetail: okResp.OrchestratorDetail,
+		LoadingModel:       okResp.LoadingModel,
+	}, nil
 }
