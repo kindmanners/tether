@@ -80,7 +80,7 @@ const (
 	gptOSS20BDownloadURL          = "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/b97cbb20d1995efd41dce8c4dd1ddf86e8db375b/gpt-oss-20b-MXFP4.gguf"
 	gptOSS20BExpectedSize   int64 = 12_109_566_624
 	gptOSS20BSHA256               = "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
-	nodeRefreshBudget             = 12 * time.Second
+	nodeRefreshBudget             = 120 * time.Second
 	maxConcurrentNodeProbes       = 4
 )
 

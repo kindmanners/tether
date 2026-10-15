@@ -29,7 +29,7 @@ import (
 	"time"
 )
 
-const clientTimeout = 10 * time.Second
+const clientTimeout = 120 * time.Second
 
 // StatusResult mirrors statusResponse but exported, for callers outside
 // this package.
