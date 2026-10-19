@@ -1,6 +1,6 @@
 ---
 name: Tether
-description: A restrained geological survey system for a read-only distributed-compute dashboard.
+description: A shared Capacity Survey system for Tether's dashboard, Orchestrator, and Agent surfaces.
 colors:
   ground: "#eef3f5"
   surface: "#f9fbfb"
@@ -15,6 +15,7 @@ colors:
   lichen: "#14713f"
   lichen-soft: "#d5efe0"
   oxidized-coral: "#d94f34"
+  oxidized-coral-control: "#c7442e"
   oxidized-coral-soft: "#fae2dc"
   focus: "#145fc2"
   seam-ink: "#ffffff"
@@ -35,11 +36,23 @@ colors:
   dark-focus: "#92c9ff"
   dark-seam-ink: "#07131f"
 typography:
-  display:
+  display-dashboard:
     fontFamily: "Assistant, Segoe UI, sans-serif"
     fontSize: "clamp(2.55rem, 2.75vw, 3rem)"
     fontWeight: 720
     lineHeight: 0.98
+    letterSpacing: "-0.035em"
+  display-orchestrator:
+    fontFamily: "Assistant, Segoe UI, sans-serif"
+    fontSize: "clamp(2.8rem, 4.5vw, 5rem)"
+    fontWeight: 720
+    lineHeight: 0.95
+    letterSpacing: "-0.035em"
+  display-agent:
+    fontFamily: "Assistant, Segoe UI, sans-serif"
+    fontSize: "clamp(2.9rem, 5vw, 5rem)"
+    fontWeight: 720
+    lineHeight: 0.95
     letterSpacing: "-0.035em"
   headline:
     fontFamily: "Assistant, Segoe UI, sans-serif"
@@ -56,17 +69,24 @@ typography:
     fontFamily: "Assistant, Segoe UI, sans-serif"
     fontSize: "1.05rem"
     fontWeight: 400
-    lineHeight: 1.55
+    lineHeight: 1.5
   label:
     fontFamily: "Assistant, Segoe UI, sans-serif"
     fontSize: "0.78rem"
-    fontWeight: 700
+    fontWeight: 720
     lineHeight: 1.35
     letterSpacing: "0.02em"
+  code:
+    fontFamily: "Cascadia Mono, Consolas, monospace"
+    fontSize: "0.75rem"
+    fontWeight: 400
+    lineHeight: 1.35
 rounded:
   pill: "999px"
+  compact: "8px"
+  field: "10px"
   control: "11px"
-  inset: "12px"
+  record: "12px"
   panel: "14px"
 spacing:
   xxs: "0.35rem"
@@ -84,13 +104,26 @@ components:
     rounded: "{rounded.control}"
     padding: "0.65rem 0.95rem"
     height: "44px"
-  button-quiet:
+  button-secondary:
     backgroundColor: "{colors.surface-raised}"
     textColor: "{colors.ink}"
     typography: "{typography.label}"
     rounded: "{rounded.control}"
     padding: "0.65rem 0.95rem"
     height: "44px"
+  field:
+    backgroundColor: "{colors.ground}"
+    textColor: "{colors.ink}"
+    typography: "{typography.body}"
+    rounded: "{rounded.field}"
+    padding: "0.65rem 0.75rem"
+    height: "46px"
+  code-value:
+    backgroundColor: "{colors.ground}"
+    textColor: "{colors.ink}"
+    typography: "{typography.code}"
+    rounded: "{rounded.field}"
+    padding: "0.72rem 0.85rem"
   panel-raised:
     backgroundColor: "{colors.surface-raised}"
     textColor: "{colors.ink}"
@@ -100,13 +133,13 @@ components:
     backgroundColor: "{colors.ground}"
     textColor: "{colors.ink-soft}"
     typography: "{typography.label}"
-    rounded: "10px"
+    rounded: "{rounded.field}"
     padding: "0.72rem 0.85rem"
   freshness-snapshot:
     backgroundColor: "{colors.oxidized-coral-soft}"
     textColor: "{colors.oxidized-coral}"
     typography: "{typography.label}"
-    rounded: "10px"
+    rounded: "{rounded.field}"
     padding: "0.72rem 0.85rem"
 ---
 
@@ -116,179 +149,230 @@ components:
 
 **Creative North Star: "The Capacity Survey"**
 
-Tether treats distributed compute like a geological survey: individual machines become one legible seam of pooled capacity. The system is calm, technical, and materially grounded. Pale stone fields and broad white survey panels establish quiet structure, while mineral navy and glacial blue make the capacity relationship immediately visible without resorting to a wall of interchangeable metric cards or terminal cosplay.
+Tether treats distributed compute like a geological survey: separate machines become one legible seam of pooled capacity. Pale stone fields and broad raised survey surfaces provide quiet structure; mineral navy and glacial blue reveal system relationships; lichen and oxidized coral state what is healthy, unavailable, recorded, or consequential. The atmosphere is technically precise and materially grounded, never terminal cosplay.
 
-The interface earns trust through explicit language. “Live,” “Snapshot,” “read-only,” freshness, degraded state, and unavailable data are always written, never communicated by color alone. The system is operational rather than theatrical: familiar controls, dense but readable records, and one deliberately expressive signature—the layered capacity seam.
+The browser dashboard, Wails Orchestrator, and Wails Agent are coordinated product surfaces within this one system. The dashboard reads the cluster survey and remains explicitly diagnostic and read-only. The Orchestrator marks, connects, prepares, and activates the cluster. The Agent inspects one contributor, establishes trust, and reports local readiness and capacity. All three begin with runtime truth, then reveal evidence and records; only the two Wails surfaces add real actions and protected operational decisions.
 
-Light and dark are equivalent environmental themes. Overview, Topology, and Records are information-architecture variants within the same system, not excuses for separate color identities. Every view keeps the mineral palette, Assistant typography, measured corner language, state semantics, and read-only boundary.
+Light and dark are equivalent environmental themes, not separate identities. Dashboard, Orchestrator, Agent, Overview, Topology, and Records are view or surface variants. Every variant shares Assistant typography, measured corners, broad regions, fine rules, contour language, state semantics, responsive re-composition, and an honest distinction between unknown data and zero.
 
 **Key Characteristics:**
 
-- Capacity first: the pooled seam remains the dominant visual and narrative artifact.
+- Capacity and readiness first; records and actions follow system context.
 - Restrained mineral materiality: stone, navy, glacial blue, lichen, and oxidized coral.
-- Broad regions before small cards; technical records follow the system-level overview.
-- Explicit operational truth: status words and provenance accompany every meaningful color cue.
-- Responsive re-composition: desktop tables become labeled records rather than squeezed columns.
+- Broad survey regions before small cards; fine rules organize dense operational detail.
+- Explicit state truth: words, provenance, timestamps, and consequences accompany color.
+- Responsive re-composition: grids stack, trust steps rotate, and tables become labeled records.
+- Familiar controls with preserved Wails behavior; expression belongs to seams and contours.
+- Lifecycle order is meaningful: Inspect, establish trust, then contribute capacity.
 
 ## Colors
 
-The palette is a cool mineral survey: quiet pale substrates, deep ink and navy measurements, glacial capacity, lichen health, and oxidized coral for snapshots or degraded states. The frontmatter is normative for both light and dark values.
+The shared palette is a cool mineral survey. The frontmatter is normative for light and dark values; dark mode remaps roles without changing hierarchy or meaning.
 
 ### Primary
 
-- **Mineral Navy:** Owns allocated capacity, the primary refresh control, footer field, and restrained emphasis.
-- **Deep Mineral Navy:** Anchors high-contrast controls and the diagnostic footer; it is not a generic decorative fill.
+- **Mineral Navy:** Allocated capacity, selected workspaces, control-plane seams, and restrained interactive emphasis.
+- **Deep Mineral Navy:** Primary actions, the diagnostic footer, and high-contrast anchors.
 
 ### Secondary
 
-- **Glacial Blue:** Represents free capacity and the connected, available portion of the system.
-- **Glacial Light:** Supplies subtle contour layers and hover washes without creating another semantic status.
+- **Glacial Blue:** Free capacity and the connected, available portion of a system.
+- **Glacial Light:** Contour strata and faint fine-pointer hover washes.
 
 ### Tertiary
 
-- **Lichen Green:** Means live, online, verified, healthy, or loaded only.
-- **Oxidized Coral:** Means recorded snapshot, offline, loading, idle countdown, degraded, or otherwise attention-worthy only.
+- **Lichen Green:** Live, online, verified, healthy, loaded, ready, or running only.
+- **Oxidized Coral:** Snapshot, offline, unreachable, loading, degraded, failed, or caution states. The Orchestrator uses its slightly deeper control variant for consequential action emphasis while preserving the same semantic family.
 
 ### Neutral
 
-- **Ground:** The page field and inset-record substrate.
-- **Surface and Raised Surface:** Quiet content layers; raised surface contains the major survey regions.
-- **Ink and Soft Ink:** Primary measurements and supporting metadata respectively.
-- **Line:** Structural dividers, table rules, control outlines, and contributor guides.
-- **Seam Ink:** Theme-aware text over the allocated seam.
-- **Focus:** A dedicated, high-contrast keyboard focus color.
+- **Ground:** Page field, form field, inset record, and fact-grid substrate.
+- **Surface and Raised Surface:** Quiet content layers and major survey regions.
+- **Ink and Soft Ink:** Primary measurements and supporting explanation respectively.
+- **Line:** Dividers, field outlines, table rules, readiness connectors, and contributor guides.
+- **Seam Ink:** Theme-aware measurement text over allocated capacity.
+- **Focus:** Dedicated high-contrast keyboard focus, never a status color.
 
-**The Semantic Mineral Rule.** Lichen and oxidized coral are status vocabulary, not decoration; pair either with a written state.
+**The Semantic Mineral Rule.** Lichen and oxidized coral are state vocabulary, not decoration; pair either with a written state or consequence.
 
-**The Theme Equivalence Rule.** Dark mode remaps the same semantic roles. It must not alter hierarchy, data meaning, or view identity.
+**The Theme Equivalence Rule.** Dark mode must not alter information hierarchy, data meaning, available actions, or surface identity.
 
-**The One-Seam Rule.** Mineral navy and glacial blue reach their highest visual concentration in the capacity seam. Elsewhere they support navigation, interaction, or small state cues.
+**The One-Seam Rule.** Navy and glacial blue reach their greatest concentration in capacity or control-plane seams. Elsewhere they support navigation, interaction, and compact measurements.
 
 ## Typography
 
 **Display Font:** Assistant variable (with Segoe UI and sans-serif fallbacks)  
 **Body Font:** Assistant variable (with Segoe UI and sans-serif fallbacks)  
-**Label Font:** Assistant variable with tabular numerals where measurements update
+**Code Font:** Cascadia Mono (with Consolas and monospace fallbacks)
 
-**Character:** Assistant gives the dashboard an open, contemporary technical voice without mimicking a terminal. Variable weights support a tight hierarchy inside a single family; measurements remain human-readable and operational.
+**Character:** Assistant gives both surfaces an open, contemporary technical voice without impersonating a terminal. Variable weights create hierarchy inside one family. Cascadia Mono is a narrow semantic exception for values that operators copy, compare, or enter exactly.
 
 ### Hierarchy
 
-- **Display** (720, responsive display token, 0.98): page-level orientation only; balance the line breaks and cap readable width around 15 characters.
-- **Headline** (720, responsive headline token, 1.05): major data regions such as Compute contributors and Available models.
-- **Title** (720, title token, 1.05): compact panel titles such as Cluster capacity.
-- **Body** (400, body token, 1.55): context and explanatory copy; keep long explanatory lines near 37–58 characters depending on viewport.
-- **Measurement** (720, fluid 1.6–2.5rem, 1): pooled counts and VRAM totals; use tabular numerals.
-- **Label** (700, label token, 1.35): table headers, state metadata, source notes, and compact operational labels.
-- **Wordmark** (800, 1.45rem desktop / 1.05rem mobile, 0.2em tracking): TETHER only; never reuse this spacing for labels.
+- **Dashboard Display** (720, dashboard display token, 0.98): compact diagnostic orientation, balanced around a short 15-character measure.
+- **Orchestrator Display** (720, orchestrator display token, 0.95): stronger operational orientation, capped near 12 characters per line.
+- **Agent Display** (720, Agent display token, 0.95): emphatic single-machine readiness, balanced within an 8.5-character measure.
+- **Headline** (720, headline token, 1.05): major data and workspace regions.
+- **Title** (720, title token, 1.05): compact capacity and gateway panel titles.
+- **Body** (400, body token, 1.5): system context, consequences, and explanatory copy; keep long lines near 38–60 characters by context.
+- **Measurement** (720, fluid 1.6–2.5rem, 1): pooled counts, VRAM totals, and cluster facts; use tabular numerals.
+- **Label** (720, label token, 1.35): table headers, state metadata, source notes, field labels, and compact actions.
+- **Code Value** (400, code token, 1.35): genuine endpoints, API keys, paths, ports when represented as literal code, and code-like values only.
+- **Wordmark** (800): TETHER only. Dashboard and Orchestrator use 1.45rem desktop / 1.05rem compact with 0.2em tracking; the quieter Agent uses 1.15rem / 1rem with 0.18em tracking.
 
-**The Measurement Voice Rule.** Large type is reserved for system capacity and summary values. File paths, ports, provenance, and timestamps remain compact supporting text.
+**The Measurement Voice Rule.** Large type belongs to capacity, readiness, and summary values. Paths, ports, provenance, and timestamps remain supporting information.
 
-**The No-Terminal Rule.** Do not introduce monospace as atmosphere. Use it only if a future view contains code that genuinely requires fixed-width alignment.
+**The Semantic Code Rule.** Use Cascadia Mono only when character-level fidelity matters: endpoint, API-key, filesystem path, command, or code values. Never use monospace to make ordinary labels, headings, node names, or metadata look technical.
+
+**The No-Kicker Rule.** Do not add decorative overlines, meaningless indices, pseudo-coordinate labels, or numbered ornaments. Numbers appear only when they encode real order, quantity, or readiness steps.
 
 ## Layout
 
-The page is a sequence of broad survey regions inside a maximum width of 94rem. Horizontal page padding is fluid through the `page` spacing token and tightens to 0.85rem below 680px. The 4.5rem sticky top bar preserves orientation and keeps theme and refresh actions accessible; at small widths it compresses to 4rem and hides nonessential explanatory labels while retaining accessible control names.
+All three surfaces use a compact sticky product bar, fluid page padding, and a broad centered content field. The dashboard caps at 94rem; the Orchestrator main workspace caps at 96rem; the Agent caps at 1440px inside its native window. Dashboard and Orchestrator use a 4.5rem utility bar that compresses to 4rem; the quieter Agent bar is 64px and compresses to 58px. Shared horizontal padding uses the `page` token and tightens on compact viewports.
 
-The desktop overview is intentionally asymmetric: a narrow narrative column and a wider capacity panel use approximately 0.43fr / 1.1fr columns with a 1.25–2rem fluid gutter. This imbalance makes the capacity seam dominant. At 980px the overview stacks, and the model row reduces from four columns to three. At 680px the layout fully re-composes: summaries become vertical rows, model records become a one-column sequence, and the node table becomes labeled record cards. Never solve mobile density with horizontal table scrolling or illegibly small text.
+The first region is deliberately asymmetric: a narrow narrative column and a wide system panel use approximately 0.43fr / 1.1fr columns with a fluid 1.25–2rem gutter. On the dashboard the right side is the pooled-capacity seam. In the Orchestrator it is gateway readiness, endpoint credentials, local GPU role, and the control-plane seam. This shared composition coordinates the surfaces while keeping their jobs distinct.
 
-The spacing rhythm is compact inside data structures and generous between regions. Use 0.35–0.75rem for related labels and values, 1–1.4rem for component interiors, and about 1.15rem between major panels. Preserve safe-area padding in the footer and a 320px minimum viewport.
+At 980px the dashboard and Orchestrator begin compact reflow. The Agent’s readiness overview stacks below 900px, while its native 970px desktop window preserves the asymmetric first view. At 680px controls wrap into full-width groups, endpoint fields stack, horizontal readiness steps become a vertical path, node and machine facts become single-column rows, dialog facts become one column, checklist pairs become a single sequence, telemetry becomes one column, and dashboard tables become labeled records. The shipped 390px Agent view retains full runtime truth, readable exact values, and protected actions without horizontal scrolling. Never solve density with illegibly small text.
 
-Overview, Topology, and Records must share the same shell, 94rem content boundary, panel treatment, spacing scale, and status vocabulary. Overview leads with the pooled seam; Topology may lead with relationships between contributors; Records may lead with sortable history or inventories. Those are view-specific compositions, not theme changes. Each still begins with system truth and moves toward technical detail.
+The spacing rhythm is compact inside data structures and generous between regions: 0.35–0.75rem for related values, 1–1.4rem for component interiors, and about 1.15rem between major panels. Preserve the 320px minimum viewport and safe-area padding where a surface reaches the window edge.
 
-**The System-Before-Records Rule.** Orient the operator with cluster state and provenance before presenting dense rows.
+Overview, Topology, Records, and single-machine readiness remain compositional variants within the same shell. Overview leads with pooled capacity or readiness, Topology may lead with relationships between contributors, Records may lead with histories or inventories, and the Agent leads with one machine’s readiness and next valid action. None receives a separate palette, typography, or decorative language.
 
-**The Reflow-Into-Records Rule.** Below the mobile breakpoint, table headers become per-field labels and each row becomes a readable record with the source order intact.
+**The State-Before-Action Rule.** Establish identity, trust, readiness, availability, and consequences before presenting a control.
+
+**The System-Before-Records Rule.** Orient the operator with cluster truth and provenance before dense rows or cards.
+
+**The Reflow-Into-Records Rule.** On compact viewports, preserve semantic order while turning columns and fact grids into labeled vertical records.
 
 ## Elevation & Depth
 
-The system uses a restrained hybrid of tonal layering and one ambient shadow. The ground, raised panels, inset status strips, rules, and seam strata do most of the structural work. Major capacity and data panels receive a single diffuse elevation (`0 16px 40px rgba(26, 55, 80, 0.09)`); controls and mobile record cards remain flat. The sticky top bar uses a translucent ground wash and 14px backdrop blur so it separates through material rather than a heavy shadow.
+The system combines tonal layering with restrained ambient lift. Ground, raised panels, inset fields, fact grids, fine rules, and contour strata do most structural work. Major dashboard and Orchestrator regions use survey lift. The Agent uses a slightly broader theme-aware native-window lift to keep its single workspace coherent. Notices use a tighter operational shadow, and modal decisions use the strongest shadow plus a dark blurred backdrop. Ordinary controls and record cards remain flat.
 
 ### Shadow Vocabulary
 
-- **Survey lift** (`0 16px 40px rgba(26, 55, 80, 0.09)`): major capacity and data panels only.
-- **State halo** (`0 0 0 0.28rem` in the matching soft semantic color): the small live or snapshot dot only.
+- **Survey lift** (`0 16px 40px rgba(26, 55, 80, 0.09)`): major capacity, gateway, and workspace regions.
+- **Agent survey lift** (`0 22px 46px rgba(31, 60, 82, 0.10)` light; `0 24px 54px rgba(0, 0, 0, 0.26)` dark): the Agent’s node survey, unified evidence workspace, and visible status notice.
+- **Operational notice** (`0 12px 30px rgba(10, 41, 72, 0.16)`): transient status and error notices only.
+- **Decision lift** (`0 24px 70px rgba(4, 18, 32, 0.34)`): modal confirmation and placement-review dialogs only.
+- **Protected trust lift** (`0 30px 80px rgba(0, 0, 0, 0.32)`): the Agent’s destructive re-pair review only.
+- **State halo** (`0 0 0 0.25–0.28rem` in the matching soft semantic color): compact live or readiness dots only.
 
-**The Broad-Surface Elevation Rule.** Elevate meaningful regions, not every metric, row, or control.
+**The Broad-Surface Elevation Rule.** Elevate meaningful regions and decisions, not every metric, row, field, or action.
 
-**The Contours-Not-Glass Rule.** The layered seam may use translucent strata; content panels remain opaque, quiet, and readable.
+**The Contours-Not-Glass Rule.** Seam strata may be translucent; content panels remain opaque and readable. The sticky bar alone may use a translucent ground wash with restrained blur.
 
 ## Shapes
 
-The form language is softly surveyed rather than bubbly. Major panels use the 14px panel radius, the capacity seam and mobile record cards use 12px, controls use 11px, and compact freshness strips use 10px. Status and legend marks are true circles; scrollbar thumbs are pill-shaped. One-pixel rules provide most internal structure.
+The form language is softly surveyed rather than bubbly. Major panels and dialogs use 14px corners; seams and record cards use 12px; buttons use 11px; fields, notices, fact cells, code values, and callouts use 10px; compact lifecycle badges may use 8px. Status and readiness marks are circles. One-pixel rules organize most internal structure.
 
-The capacity seam is the signature silhouette: a clipped rounded rectangle split into allocated and free regions, with broad overlapping contour strata. The boundary is quantitative, while the internal curves suggest geological layers without obscuring the numbers.
+The capacity and control-plane seams are the signature silhouettes: clipped rounded regions filled with broad overlapping contours. The dashboard seam encodes allocated and free proportions. The Orchestrator seam communicates readiness through state-tinted material rather than a fabricated quantity.
 
-**The Radius Hierarchy Rule.** Broad region, inset region, control, then status mark: do not flatten every element to one radius or inflate ordinary panels into capsules.
+**The Radius Hierarchy Rule.** Major region, record or seam, control, compact field, then status mark. Do not flatten everything to one radius or turn ordinary controls into capsules.
+
+**The Honest Contour Rule.** Contours may express system continuity, state, or refresh. They must never imply a measurement the product does not possess.
 
 ## Components
 
-### Top Bar and Navigation
+### Utility Bar and Navigation
 
-- **Style:** Sticky, translucent ground material with a single bottom rule. The tracked wordmark anchors the left; read-only context immediately follows on desktop.
-- **Actions:** Theme and refresh remain on the right, each meeting the 44px minimum target. Supporting timestamp may disappear on narrow widths but remains visible in overview status.
-- **States:** Hover shifts toward mineral navy; focus uses a 3px focus outline with 3px offset. The active theme is communicated through label and `aria-pressed`, not a new visual identity.
+- **Style:** Sticky translucent ground, one bottom rule, tracked TETHER wordmark, explicit surface label, current status, and theme action.
+- **Workspace tabs:** Text tabs sit on a fine baseline. The selected tab uses navy text and a 2px underline; unselected tabs remain soft ink. Arrow keys, Home, and End preserve the tab interaction contract.
+- **Responsive:** Supporting surface labels may hide, but product identity, current state, and theme access remain.
 
 ### Buttons
 
-- **Shape:** Gently squared control corners (11px) and a 44px minimum height.
-- **Primary:** Deep mineral fill, white text, compact horizontal padding, and a refresh glyph. Hover brightens toward mineral navy.
-- **Quiet:** Raised surface, ink text, and a structural line border. Hover changes border and text to mineral navy.
-- **Disabled / Refreshing:** Retain the control shape and label the action “Refreshing”; use 0.7 opacity and a wait cursor.
-- **Motion:** The refresh glyph spins while the capacity seam receives one 720ms scan-and-settle pass.
+- **Shape:** Restrained control corners (10–11px); dashboard and Orchestrator primary controls meet a 44px minimum height, the Agent uses a compact 42px native control, and dense Orchestrator action shelves may use the shipped 38px minimum.
+- **Primary:** Deep mineral fill with white text. Use for the next explicit operational step or dashboard refresh, never for every available action.
+- **Secondary:** Raised surface, ink text, and line border. Use for reversible or parallel actions.
+- **Caution:** Oxidized coral may fill a confirmed consequential action; the dialog must first explain impact.
+- **States:** Hover moves toward mineral navy, active shifts down 1px, disabled remains legible at reduced opacity, and focus uses the global 3px outline with 3px offset.
 
-### Capacity Seam
+### Inputs and Selects
 
-- **Role:** The system’s dominant data visualization and signature component. It communicates allocated versus free pooled VRAM and attributes total capacity to contributors.
-- **Shape:** A 12px clipped region with a minimum height of 7.4rem desktop and 8.2rem mobile.
-- **Allocation:** The visible split is clamped between 18% and 82% so labels remain legible; the accessible label carries the exact values.
-- **Content:** Both sides contain a strong measurement and a written label. A legend repeats allocated, free, and total values above; contributor annotations sit below.
-- **Motion:** A bright wave travels once across the seam on refresh and strata briefly resaturate. Reduced motion suppresses animation while state text and colors still update.
+- **Style:** Ground substrate, 1px line border, 10px corners, full width, and a 46px minimum height.
+- **Labels:** Always visible above the field; placeholder text is supporting help, not the field name.
+- **Focus:** Global focus outline supplements the border rather than relying on a color-only shift.
+- **Validation:** Keep errors explicit in words and route operational failures to the live notice region.
 
-### Status and Freshness
+### Code Values
 
-- **Live:** Lichen text, dot, and soft halo paired with the word “Live” plus timestamp.
-- **Snapshot / Offline:** Oxidized coral text, dot, and soft field paired with explicit recorded-snapshot wording.
-- **Read-only:** State the boundary in the top bar, freshness strip, explanatory copy, and diagnostic footer where context requires it. Do not imply start, stop, pairing, or other controls.
-- **Unavailable / Loading:** Use literal phrases such as “Not reported,” “Loading,” or “Worker state unavailable.” Never show a blank as if it were zero.
+- **Style:** Ground substrate, 10px corners, compact padding, and the code typography token.
+- **Use:** Local gateway endpoints, API keys, exact paths, or code-like credentials. Wrap long values safely without truncating essential characters.
+- **Non-use:** Do not apply this treatment to ordinary technical prose, hostnames, model names, labels, or card metadata.
 
-### Cards / Containers
+### Capacity and Control-Plane Seams
 
-- **Corner Style:** Broad 14px survey panels; 12px mobile record cards.
-- **Background:** Raised surface for major regions, ground for inset records and live freshness, coral-soft for snapshot freshness.
-- **Border:** Internal one-pixel rules and contributor guides; panels rely on tonal contrast and survey lift rather than boxed borders.
-- **Internal Padding:** Fluid 1–1.5rem for major panels and 0.85rem for compact mobile records.
+- **Capacity seam:** The dashboard’s dominant quantitative visualization. Both regions show a strong measurement and written label; the legend and accessible label repeat exact meaning. The visible split is clamped for legibility while accessible text carries exact values.
+- **Control-plane seam:** The Orchestrator’s dominant state material. Lichen or coral may subtly mix into navy for running or unavailable states; it does not invent a numeric ratio.
+- **Readiness seam:** The Agent’s non-quantitative node-readiness material. Its contour positions react to setup, provisioning, pairing, and ready states; it never presents those states as a fabricated capacity percentage.
+- **Motion:** Dashboard and Orchestrator refresh use one 720ms scan and saturation-settle pass. Agent refresh uses one slower 1.2s scan while its state contours settle over 650ms. Reduced motion suppresses animation while state text and color still update.
 
-### Data Tables and Records
+### Status, Freshness, and Notices
 
-- **Desktop:** Full-width tables with quiet headers, 0.8–0.95rem cell padding, line dividers, and bold identity in the first column.
-- **Pointer Hover:** A faint glacial wash may identify the scanned row; it must not look selected.
-- **Mobile:** Hide the visual header but preserve semantics; expose each cell’s label inside a ground-colored 12px record card. Keep status, details, ports, and provenance readable without horizontal scrolling.
-- **Empty States:** Replace the data structure with a direct sentence that names what was not reported.
+- **Live and ready:** Lichen dot plus written state and timestamp or supporting detail.
+- **Snapshot, unavailable, failed, or caution:** Oxidized coral plus literal state language, cause, and recovery context where available.
+- **Unknown:** Use “Not reported,” “Checking,” or “Unavailable”; never render blank data as zero, healthy, or live.
+- **Surface boundary:** The dashboard repeatedly states read-only diagnostic context. The Orchestrator states private control-plane context and places consequential changes behind review.
 
-### Model Records
+### Cards and Records
 
-- **Desktop:** Four-column rows balance model identity, path, format/note, and lifecycle placement. At medium width, the nonessential note may hide.
-- **Mobile:** Collapse to one column, restore the note, move the long path last, and preserve lifecycle words and node placement.
+- **Major panels:** Raised surface, 14px corners, survey lift, and fluid 1–1.5rem padding.
+- **Node and model cards:** Ground substrate, 12px corners, fine internal rules, identity and state first, facts second, actions last.
+- **Dashboard table:** Full-width rows on desktop; below 680px each row becomes a labeled ground record without horizontal scrolling.
+- **Hover:** Fine-pointer records may receive a faint glacial wash; hover must not resemble selection.
+- **Empty states:** Directly name what is absent and, for operational surfaces, the next safe recovery step.
+
+### Readiness Path
+
+- **Desktop:** Three real ordered trust steps share one fine horizontal connector. The Agent’s canonical sequence is **Inspect this machine → Establish trust → Contribute capacity**.
+- **Mobile:** Rotate into a vertical path with the numbered mark spanning its title and explanation.
+- **Rule:** Preserve the meaningful setup order. Do not reuse numbered circles as decorative section indices.
+
+### Agent Preflight and Telemetry
+
+- **Preflight:** A read-only evidence sequence, not an action checklist. Each record names the actual check, describes observed truth, and writes “Not started,” “In progress,” or “Finished” in addition to its state mark.
+- **Progress:** Pair the finished count with a written percentage and a restrained lichen track. Sequence order comes from the runtime checklist; do not add decorative ordinals.
+- **GPU telemetry:** Show exact GPU identity, utilization, used/total/free VRAM, driver version, update time, and a labeled capacity bar. Missing telemetry gets a direct empty-state sentence.
+- **Lifecycle boundary:** The Agent reports the active model but explains that the paired Orchestrator owns model placement and lifecycle.
+- **Machine records:** Hostname, configuration path, setup report, pairing code, and persistent log path use the semantic code role because character-level fidelity matters. Explanatory prose and dialog facts remain Assistant.
+
+### Decision Dialogs
+
+- **Structure:** Decision title, plain-language summary, bordered fact grid, consequence callout, then cancel and confirm actions.
+- **Behavior:** Preserve native dialog semantics, focus handling, and every operational confirmation. Long dialogs scroll internally within the viewport.
+- **Consequences:** Destructive, interruptive, or resource-heavy actions name affected models, placement, capacity sample, destination, or interruption before confirmation.
+- **Agent re-pair:** The protected destructive dialog must state that the Agent stops and local key, certificate, and saved Orchestrator trust are removed; it must also state that pairing is the recovery path. Cancel remains the initial safe focus and the coral action names the consequence.
+
+### Wails Operational Contract
+
+- **Bindings:** Existing DOM IDs and Go binding calls are behavior contracts. Visual work must not rename, remove, or bypass Orchestrator `AgentApp` calls or Agent `AgentApp.State`, `StartProvisioning`, `OpenPairing`, and `ResetPairing` flows.
+- **Refresh:** Live Snapshot and Models calls can update independently but must resolve into explicit visible state. Background preparation and telemetry polling remain quiet unless operator attention is required.
+- **Actions:** Pairing, allowlisting, RPC lifecycle, local GPU role, gateway start, download, load, and unload remain real controls with disabled, progress, success, cancellation, and error states.
+- **Security truth:** One-time pairing codes are not saved; pinned mTLS and Tailnet trust do not turn workers into a sandbox.
+- **Agent data truth:** Readiness derives from configuration, audited bootstrap, pairing, service, and heartbeat state. Preflight, telemetry, pairing code, logs, exact paths, provisioning progress, and errors remain literal runtime data; absence is never rewritten as success.
 
 ## Do's and Don'ts
 
 ### Do:
 
-- **Do** keep the pooled capacity seam visually dominant in Overview and use it as the system’s signature, not a generic progress bar.
-- **Do** write “Live,” “Snapshot,” “read-only,” “Not reported,” and “unavailable” wherever those distinctions affect operator judgment.
-- **Do** pair state colors with text, provenance, and timestamps.
-- **Do** preserve theme parity and persistent user theme preference.
-- **Do** transform desktop tables into labeled mobile records while preserving content order and semantics.
-- **Do** use broad survey regions, quiet rules, and one ambient panel elevation.
-- **Do** treat Overview, Topology, and Records as compositional variants of one system.
+- **Do** keep capacity or readiness dominant before records and actions.
+- **Do** coordinate dashboard, Orchestrator, and Agent as distinct roles inside one Capacity Survey system.
+- **Do** write “Live,” “Snapshot,” “read-only,” “Checking,” “Not reported,” and “Unavailable” wherever operator judgment depends on the distinction.
+- **Do** pair every state color with text, provenance, consequences, or a timestamp.
+- **Do** use Cascadia Mono only for genuine endpoint, API-key, path, command, or code values.
+- **Do** preserve Wails bindings, element IDs, confirmations, progress, focus behavior, and visible errors.
+- **Do** keep Agent preflight read-only, telemetry literal, and the Inspect → Establish trust → Contribute lifecycle meaningful.
+- **Do** transform dense desktop structures into stacked, labeled records on compact viewports.
+- **Do** keep light and dark structurally and semantically equivalent.
 
 ### Don't:
 
-- **Don't** turn Overview into a grid of equal metric cards or reduce the capacity seam to a decorative banner.
-- **Don't** use terminal cosplay, gratuitous monospace, neon accents, or a different palette per view.
-- **Don't** communicate health, freshness, or availability through color alone.
-- **Don't** imply browser-side operational control; start, stop, pair, and lifecycle actions remain in the desktop Orchestrator.
-- **Don't** equate missing data with zero, healthy, or live.
-- **Don't** compress desktop columns into a horizontally scrolling mobile table.
-- **Don't** add shadows, pills, or accent color to every row and metric; rarity is what preserves hierarchy.
+- **Don't** split dashboard, Orchestrator, Agent, Overview, Topology, or Records into unrelated palettes or themes.
+- **Don't** turn the interface into equal metric tiles or reduce the seam to decorative chrome.
+- **Don't** use monospace, terminal motifs, decorative kickers, or meaningless indices to signal technical credibility.
+- **Don't** communicate health, trust, freshness, availability, or consequence through color alone.
+- **Don't** imply browser-side control on the read-only dashboard or hide operational impact in the Orchestrator.
+- **Don't** equate missing information with zero, healthy, ready, or live.
+- **Don't** remove or rename Wails-bound IDs, skip decision dialogs, or replace real actions with visual stand-ins.
+- **Don't** add ordinals to Agent preflight records or use the pairing code, machine paths, or logs as technical decoration.
+- **Don't** solve compact layouts with horizontal table scrolling or touch targets below the shipped minimums.

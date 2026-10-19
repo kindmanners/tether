@@ -38,7 +38,7 @@ function stateClass(status) {
 
 function modelStateClass(state) {
   const value = String(state || "unloaded").toLowerCase();
-  return ["unloaded", "loading", "loaded", "idle-countdown", "unloading"].includes(value) ? value : "unknown";
+  return ["unloaded", "loading", "loaded", "idle-countdown", "unloading", "failed", "crashed"].includes(value) ? value : "unknown";
 }
 
 function setTheme(theme) {
@@ -110,12 +110,13 @@ function renderNodes(nodes) {
   for (const node of nodes) {
     const row = document.createElement("tr");
     const status = String(node.status || "unknown");
+    const effectiveStatus = node.agentStatus === "Unreachable" ? "Agent unreachable" : status;
     const endpoint = node.rpcPort ? `TCP ${node.rpcPort}` : "Not reported";
     const agentPort = node.agentPort ? `TCP ${node.agentPort}` : "Port not reported";
     const agent = node.agentStatus || agentPort;
     const role = node.isOrchestrator ? '<span class="node-role">Orchestrator</span>' : "";
     row.innerHTML = `
-      <td data-label="Node">${escapeText(node.hostname)}${role}<span class="node-detail"><span class="state ${stateClass(status)}">${escapeText(status)}</span></span></td>
+      <td data-label="Node">${escapeText(node.hostname)}${role}<span class="node-detail"><span class="state ${node.agentStatus === "Unreachable" ? "state--offline" : stateClass(status)}">${escapeText(effectiveStatus)}</span></span></td>
       <td data-label="GPU">${escapeText(node.gpuModel || "Not reported")}<span class="node-detail">${escapeText(node.note || "")}</span></td>
       <td data-label="VRAM">${gibibytes(node.vramTotalBytes)}<span class="node-detail">${node.vramFreeBytes ? `${gibibytes(node.vramFreeBytes)} free` : "Free VRAM not reported"}</span></td>
       <td data-label="Local RPC">${escapeText(endpoint)}</td>
@@ -139,7 +140,8 @@ function renderModels(models, modelStateError) {
           const nodes = Array.isArray(state.nodes) && state.nodes.length ? state.nodes.join(", ") : "Not placed";
           const countdown = state.idleUntil ? ` · unloads ${new Date(state.idleUntil).toLocaleTimeString()}` : "";
           const label = String(state.state || "unloaded");
-          return `<p class="model-state model-state--${modelStateClass(label)}">${escapeText(label)}<span>${escapeText(nodes + countdown)}</span></p>`;
+          const detail = state.detail ? ` · ${state.detail}` : "";
+          return `<p class="model-state model-state--${modelStateClass(label)}">${escapeText(label)}<span>${escapeText(nodes + countdown + detail)}</span></p>`;
         }).join("")
       : `<p class="model-state model-state--unknown">Not reported<span>${escapeText(modelStateError || "Start tether-api with the dashboard API key to report worker state")}</span></p>`;
     row.innerHTML = `
@@ -193,7 +195,10 @@ function render(data, isFallback) {
   renderModels(models, data.modelStateError);
 }
 
+let refreshTimer;
+
 async function refresh() {
+  clearTimeout(refreshTimer);
   const button = byId("refresh");
   button.disabled = true;
   button.querySelector("span:last-child").textContent = "Refreshing";
@@ -207,6 +212,7 @@ async function refresh() {
     window.setTimeout(() => document.body.classList.remove("is-refreshing"), 760);
     button.disabled = false;
     button.querySelector("span:last-child").textContent = "Refresh";
+    refreshTimer = window.setTimeout(refresh, 5000);
   }
 }
 

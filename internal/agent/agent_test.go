@@ -99,6 +99,16 @@ func TestAgentClientServerEndToEndOverPinnedMTLS(t *testing.T) {
 	if err != nil || status.Status != "Stopped" {
 		t.Fatalf("initial GetStatus() = %#v, %v", status, err)
 	}
+	if err := client.PulseLoadLiveness(context.Background(), addr, "session_123456789", "model.gguf"); err != nil {
+		t.Fatalf("PulseLoadLiveness() error = %v", err)
+	}
+	status, err = client.GetStatus(addr)
+	if err != nil || status.OrchestratorStatus != "Monitoring" || status.LoadingModel != "model.gguf" {
+		t.Fatalf("load-monitored GetStatus() = %#v, %v", status, err)
+	}
+	if err := client.EndLoadLiveness(context.Background(), addr, "session_123456789"); err != nil {
+		t.Fatalf("EndLoadLiveness() error = %v", err)
+	}
 	status, err = client.StartRPCServer(addr, 30)
 	if err != nil || status.Status != "Running" {
 		t.Fatalf("StartRPCServer() = %#v, %v", status, err)
@@ -404,6 +414,9 @@ func TestCommandHandlersRejectInvalidMethodsAndPorts(t *testing.T) {
 		{name: "start port", handler: server.handleStart, method: http.MethodPost, body: `{"port":0}`, want: http.StatusBadRequest},
 		{name: "stop method", handler: server.handleStop, method: http.MethodGet, want: http.StatusMethodNotAllowed},
 		{name: "status method", handler: server.handleStatus, method: http.MethodPost, want: http.StatusMethodNotAllowed},
+		{name: "load liveness method", handler: server.handleLoadLiveness, method: http.MethodGet, want: http.StatusMethodNotAllowed},
+		{name: "load liveness malformed", handler: server.handleLoadLiveness, method: http.MethodPost, body: "{", want: http.StatusBadRequest},
+		{name: "load liveness invalid session", handler: server.handleLoadLiveness, method: http.MethodPost, body: `{"sessionId":"short","model":"model","action":"pulse"}`, want: http.StatusConflict},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

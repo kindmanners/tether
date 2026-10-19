@@ -41,6 +41,16 @@ deadline because llama.cpp RPC connections may legitimately remain quiet for
 long periods. Stopping the managed RPC process or shutting down either Tether
 side closes the associated streams.
 
+During model loading, each participating Agent and the Orchestrator exchange
+an authenticated ping/pong every 20 seconds. A missed response is checked once
+more after 30 seconds. If the Agent still does not answer, the Orchestrator
+stops the complete model load and terminates its `llama-server` worker. If the
+Orchestrator disappears and stops renewing the load session, the Agent shows
+**Orchestrator Not Available** and terminates its managed RPC process to
+reclaim GPU memory. Agent and Orchestrator screens refresh these failure states
+automatically; the read-only browser dashboard reports the same model failure
+and unresponsive node.
+
 ## Re-pair an Agent
 
 Use **Re-pair Orchestrator** in `tether-agent` when intentionally rotating

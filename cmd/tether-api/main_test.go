@@ -367,6 +367,195 @@ func TestWaitForWorkerDetectsProcessExit(t *testing.T) {
 	}
 }
 
+func TestLoadMonitorCancelsAfterConfirmedAgentFailure(t *testing.T) {
+	var pulses atomic.Int32
+	gateway := &gateway{
+		states: make(map[string]modelState),
+		cfg: gatewayConfig{
+			loadHeartbeatInterval:     10 * time.Millisecond,
+			loadHeartbeatRetryDelay:   15 * time.Millisecond,
+			loadHeartbeatProbeTimeout: 10 * time.Millisecond,
+			loadLivenessProbe: func(_ context.Context, _ placement.Node, _, _ string, action loadLivenessAction) error {
+				if action == loadLivenessEnd {
+					return nil
+				}
+				if pulses.Add(1) == 1 {
+					return nil
+				}
+				return fmt.Errorf("agent unavailable")
+			},
+		},
+	}
+	plan := placement.Plan{Nodes: []placement.Node{{Hostname: "node-a", AgentAddress: "100.64.0.2:7420"}}}
+	monitor, loadCtx, err := gateway.startLoadMonitor(context.Background(), "model", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer monitor.Abort()
+	select {
+	case <-loadCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("load context was not canceled after confirmed Agent failure")
+	}
+	cause := context.Cause(loadCtx)
+	if !isLoadLivenessFailure(cause) || !strings.Contains(cause.Error(), "node-a") {
+		t.Fatalf("load cancellation cause = %v", cause)
+	}
+	if err := monitor.Complete(context.Background()); !isLoadLivenessFailure(err) {
+		t.Fatalf("confirmed failure was lost during completion: %v", err)
+	}
+	gateway.mu.Lock()
+	state := gateway.states["model"]
+	gateway.mu.Unlock()
+	if state.State != "loading" || !strings.Contains(state.Detail, "node-a") {
+		t.Fatalf("loading state did not expose suspect Agent: %#v", state)
+	}
+}
+
+func TestLoadLivenessFailureIsPublishedAsFailedModelState(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "model.gguf"), []byte("GGUF"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gateway, err := newGateway(gatewayConfig{
+		modelsDir: dir,
+		apiKey:    "test-api-key",
+		planner: func(string) (placement.Plan, error) {
+			return placement.Plan{Nodes: []placement.Node{{Hostname: "node-a"}}}, nil
+		},
+		launcher: func(context.Context, string, string, placement.Plan) (*modelWorker, error) {
+			return nil, &loadLivenessFailure{hostnames: []string{"node-a"}}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gateway.load(context.Background(), "model"); !isLoadLivenessFailure(err) {
+		t.Fatalf("load error = %v", err)
+	}
+	gateway.mu.Lock()
+	state := gateway.states["model"]
+	gateway.mu.Unlock()
+	if state.State != "failed" || !strings.Contains(state.Detail, "node-a") {
+		t.Fatalf("failed state = %#v", state)
+	}
+}
+
+func TestLoadMonitorContinuesWhenAgentAnswersConfirmation(t *testing.T) {
+	var pulses atomic.Int32
+	gateway := &gateway{
+		states: make(map[string]modelState),
+		cfg: gatewayConfig{
+			loadHeartbeatInterval:     10 * time.Millisecond,
+			loadHeartbeatRetryDelay:   15 * time.Millisecond,
+			loadHeartbeatProbeTimeout: 10 * time.Millisecond,
+			loadLivenessProbe: func(_ context.Context, _ placement.Node, _, _ string, action loadLivenessAction) error {
+				if action == loadLivenessEnd {
+					return nil
+				}
+				call := pulses.Add(1)
+				if call == 2 {
+					return fmt.Errorf("transient miss")
+				}
+				return nil
+			},
+		},
+	}
+	plan := placement.Plan{Nodes: []placement.Node{{Hostname: "node-a", AgentAddress: "100.64.0.2:7420"}}}
+	monitor, loadCtx, err := gateway.startLoadMonitor(context.Background(), "model", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer monitor.Abort()
+	deadline := time.Now().Add(time.Second)
+	for pulses.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if pulses.Load() < 3 {
+		t.Fatal("confirmation probe did not run")
+	}
+	select {
+	case <-loadCtx.Done():
+		t.Fatalf("transient failure canceled load: %v", context.Cause(loadCtx))
+	default:
+	}
+	if err := monitor.Complete(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadMonitorFinalConfirmationNamesAgentAfterWorkerExit(t *testing.T) {
+	var pulses atomic.Int32
+	gateway := &gateway{
+		states: make(map[string]modelState),
+		cfg: gatewayConfig{
+			loadHeartbeatInterval:     time.Hour,
+			loadHeartbeatRetryDelay:   10 * time.Millisecond,
+			loadHeartbeatProbeTimeout: 10 * time.Millisecond,
+			loadLivenessProbe: func(_ context.Context, _ placement.Node, _, _ string, action loadLivenessAction) error {
+				if action == loadLivenessEnd {
+					return nil
+				}
+				if pulses.Add(1) == 1 {
+					return nil
+				}
+				return fmt.Errorf("agent unavailable")
+			},
+		},
+	}
+	plan := placement.Plan{Nodes: []placement.Node{{Hostname: "node-a", AgentAddress: "100.64.0.2:7420"}}}
+	monitor, _, err := gateway.startLoadMonitor(context.Background(), "model", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer monitor.Abort()
+	err = monitor.Confirm(context.Background())
+	if !isLoadLivenessFailure(err) || !strings.Contains(err.Error(), "node-a") {
+		t.Fatalf("final confirmation error = %v", err)
+	}
+}
+
+func TestLoadMonitorCompletionDuringFirstMissDoesNotLatchCancellation(t *testing.T) {
+	var pulses atomic.Int32
+	firstMiss := make(chan struct{})
+	gateway := &gateway{
+		states: make(map[string]modelState),
+		cfg: gatewayConfig{
+			loadHeartbeatInterval:     time.Millisecond,
+			loadHeartbeatRetryDelay:   time.Hour,
+			loadHeartbeatProbeTimeout: time.Second,
+			loadLivenessProbe: func(_ context.Context, _ placement.Node, _, _ string, action loadLivenessAction) error {
+				if action == loadLivenessEnd {
+					return nil
+				}
+				if pulses.Add(1) == 1 {
+					return nil
+				}
+				select {
+				case <-firstMiss:
+				default:
+					close(firstMiss)
+				}
+				return fmt.Errorf("transient miss")
+			},
+		},
+	}
+	plan := placement.Plan{Nodes: []placement.Node{{Hostname: "node-a", AgentAddress: "100.64.0.2:7420"}}}
+	monitor, _, err := gateway.startLoadMonitor(context.Background(), "model", plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer monitor.Abort()
+	select {
+	case <-firstMiss:
+	case <-time.After(time.Second):
+		t.Fatal("periodic first miss did not occur")
+	}
+	if err := monitor.Complete(context.Background()); err != nil {
+		t.Fatalf("completion latched its own cancellation: %v", err)
+	}
+}
+
 func TestConcurrentAcquireLaunchesOneWorker(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "model.gguf"), []byte("GGUF"), 0o600); err != nil {

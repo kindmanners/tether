@@ -15,6 +15,13 @@ detail.
 | [Linux GPU-node bootstrap](linux-gpu-node-bootstrap.md) | prepare a Linux node for CUDA RPC inference |
 | [Security policy](../SECURITY.md) | understand RPC trust boundaries or report a vulnerability privately |
 
+## Project references
+
+- [Product brief](PRODUCT.md) defines Tether's users, purpose, boundaries, and
+  product principles.
+- [Design system](DESIGN.md) defines the shared visual and interaction language
+  for the dashboard, Orchestrator, and Agent surfaces.
+
 ## Run records
 
 - [Distributed acceptance run — 2026-10-07](distributed-acceptance-2026-10-07.md)

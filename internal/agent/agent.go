@@ -66,8 +66,11 @@ type startRequest struct {
 }
 
 type statusResponse struct {
-	Status    string `json:"status"`
-	LastError string `json:"last_error,omitempty"`
+	Status             string `json:"status"`
+	LastError          string `json:"last_error,omitempty"`
+	OrchestratorStatus string `json:"orchestrator_status,omitempty"`
+	OrchestratorDetail string `json:"orchestrator_detail,omitempty"`
+	LoadingModel       string `json:"loading_model,omitempty"`
 }
 
 type errorResponse struct {
@@ -112,6 +115,7 @@ type Server struct {
 	shutdownCtx    context.Context
 	cancelShutdown context.CancelFunc
 	streamWG       sync.WaitGroup
+	loadLiveness   *loadLiveness
 }
 
 type rpcStream struct {
@@ -133,7 +137,14 @@ func NewServer(cfg *agentconfig.Config, manager *process.Manager) *Server {
 	return &Server{
 		config: cfg, manager: manager, streams: make(map[*rpcStream]struct{}),
 		peerStreams: make(map[[sha256.Size]byte]int), shutdownCtx: shutdownCtx, cancelShutdown: cancelShutdown,
+		loadLiveness: newLoadLiveness(manager, LoadHeartbeatExpiry),
 	}
+}
+
+// LoadLivenessStatus reports the most recent load-scoped Orchestrator health
+// observation for local UI surfaces. It contains no session identifier.
+func (s *Server) LoadLivenessStatus() LoadLivenessStatus {
+	return s.loadLiveness.Status()
 }
 
 // Start begins serving on addr using tlsConfig — build tlsConfig with
@@ -193,6 +204,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/capabilities", s.handleCapabilities)
 	mux.HandleFunc("/rpc", s.handleRPC)
+	mux.HandleFunc("/load-liveness", s.handleLoadLiveness)
 	return mux
 }
 
@@ -319,6 +331,7 @@ func (s *Server) beginShutdown() {
 	}
 	s.closing = true
 	s.cancelShutdown()
+	s.loadLiveness.close()
 	streams := make([]*rpcStream, 0, len(s.streams))
 	for stream := range s.streams {
 		streams = append(streams, stream)
@@ -372,7 +385,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("agent: started ggml-rpc-server (host=%q port=%d)", s.config.RPCListenHost, req.Port)
-	writeStatus(w, s.manager)
+	writeStatus(w, s.manager, s.loadLiveness.Status())
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
@@ -387,7 +400,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Println("agent: stopped ggml-rpc-server")
-	writeStatus(w, s.manager)
+	writeStatus(w, s.manager, s.loadLiveness.Status())
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -395,7 +408,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "only GET is supported")
 		return
 	}
-	writeStatus(w, s.manager)
+	writeStatus(w, s.manager, s.loadLiveness.Status())
 }
 
 // handleCapabilities returns the local bootstrap report, if one exists. A
@@ -476,11 +489,14 @@ func liveNvidiaGPUs() ([]GPUCapability, error) {
 	return gpus, nil
 }
 
-func writeStatus(w http.ResponseWriter, m *process.Manager) {
+func writeStatus(w http.ResponseWriter, m *process.Manager, liveness LoadLivenessStatus) {
 	resp := statusResponse{Status: m.Status().String()}
 	if err := m.LastExitError(); err != nil {
 		resp.LastError = err.Error()
 	}
+	resp.OrchestratorStatus = liveness.State
+	resp.OrchestratorDetail = liveness.Detail
+	resp.LoadingModel = liveness.Model
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)

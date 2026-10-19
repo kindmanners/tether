@@ -152,7 +152,7 @@ dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; }
 .state, .model-state { flex: 0 0 auto; color: var(--ink-soft); font-size: .74rem; font-weight: 720; text-transform: capitalize; }
 .state::before, .model-state::before { display: inline-block; width: .52rem; height: .52rem; margin: 0 .4rem .03rem 0; border-radius: 50%; background: currentColor; content: ""; }
 .state.online, .state.verified, .model-state.loaded { color: var(--lichen); }
-.state.offline, .state.unreachable, .model-state.loading, .model-state.idle-countdown, .model-download.error { color: var(--coral); }
+.state.offline, .state.unreachable, .model-state.loading, .model-state.idle-countdown, .model-state.failed, .model-state.crashed, .model-download.error { color: var(--coral); }
 .state.online { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; }
 .state.online i { display: none; }
 .state.online span { width: 100%; margin-left: .95rem; color: var(--ink-soft); font-size: .68rem; font-weight: 400; text-transform: none; }
