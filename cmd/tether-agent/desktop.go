@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -895,11 +896,14 @@ func (a *AgentApp) runHeartbeat(ctx context.Context) {
 		pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		latency, err := heartbeat.Ping(pingCtx, target)
 		cancel()
+		completedAt := time.Now().UTC()
 		a.mu.Lock()
 		if err != nil {
 			a.heartbeatDetail = "Orchestrator heartbeat failed: " + err.Error()
+			log.Printf("agent: Orchestrator heartbeat failed target=%q at=%s latency_ms=%d error=%q", target, completedAt.Format(time.RFC3339Nano), latency.Milliseconds(), err)
 		} else {
-			a.heartbeatDetail = fmt.Sprintf("Orchestrator heartbeat to %s succeeded in %dms at %s", target, latency.Milliseconds(), time.Now().Format(time.Kitchen))
+			a.heartbeatDetail = fmt.Sprintf("Orchestrator heartbeat to %s succeeded in %dms at %s", target, latency.Milliseconds(), completedAt.Format(time.Kitchen))
+			log.Printf("agent: last successful Orchestrator heartbeat landed target=%q at=%s latency_ms=%d", target, completedAt.Format(time.RFC3339Nano), latency.Milliseconds())
 		}
 		a.mu.Unlock()
 	}

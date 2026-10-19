@@ -984,6 +984,7 @@ func (a *OrchestratorApp) Models() (*ModelLibrary, error) {
 // LoadModel explicitly keeps a selected installed GGUF resident in the local
 // gateway. Its layers are placed by tether-api across the current GPU mesh.
 func (a *OrchestratorApp) LoadModel(modelID string) error {
+	log.Printf("orchestrator: LoadModel triggered for modelID=%q", modelID)
 	if strings.TrimSpace(modelID) == "" {
 		return fmt.Errorf("choose an installed model to load")
 	}
