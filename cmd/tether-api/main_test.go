@@ -367,6 +367,25 @@ func TestWaitForWorkerDetectsProcessExit(t *testing.T) {
 	}
 }
 
+func TestWaitForWorkerIncludesHealthFailureAndStartupOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "RPC backend rejected connection", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	var output bytes.Buffer
+	output.WriteString("llama-server: invalid --rpc endpoint")
+
+	err := waitForWorker(context.Background(), strings.TrimPrefix(server.URL, "http://"), &modelWorker{done: make(chan struct{})}, 120*time.Millisecond, &output)
+	if err == nil {
+		t.Fatal("waitForWorker succeeded for an unhealthy worker")
+	}
+	for _, want := range []string{"status=500", "RPC backend rejected connection", "startup output:", "invalid --rpc endpoint"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("waitForWorker error %q does not contain %q", err, want)
+		}
+	}
+}
+
 func TestLoadMonitorCancelsAfterConfirmedAgentFailure(t *testing.T) {
 	var pulses atomic.Int32
 	gateway := &gateway{

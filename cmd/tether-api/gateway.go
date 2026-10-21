@@ -83,6 +83,29 @@ type modelWorker struct {
 	tunnelsOnce sync.Once
 }
 
+type startupOutputCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *startupOutputCapture) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *startupOutputCapture) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Len()
+}
+
+func (c *startupOutputCapture) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
 type workerTunnel interface {
 	Endpoint() string
 	Close() error
@@ -657,11 +680,12 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 	cmd.Cancel = func() error { return executil.KillProcessTree(cmd) }
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = llamaServerEnvironment(os.Environ(), apiKey, planUsesLocalGPU(plan))
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	var startupOutput startupOutputCapture
+	cmd.Stdout, cmd.Stderr = &startupOutput, &startupOutput
 	log.Printf("tether-api: starting llama-server model=%q address=%s placement=%s nodes=%s", modelID, address, plan.Mode, strings.Join(planNodeNames(plan), ", "))
 	releaseLifetime, err := executil.StartWithParentLifetime(cmd)
 	if err != nil {
-		return nil, confirmAgentOnLoadError(ctx, monitor, fmt.Errorf("starting model worker: %w", err))
+		return nil, confirmAgentOnLoadError(ctx, monitor, fmt.Errorf("starting model worker: %w%s", err, startupOutputSuffix(&startupOutput)))
 	}
 	worker := &modelWorker{modelID: modelID, model: modelPath, plan: plan, address: address, cmd: cmd, done: make(chan struct{}), apiKey: apiKey, tunnels: tunnels}
 	go func() {
@@ -669,7 +693,7 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 		releaseLifetime()
 		close(worker.done)
 	}()
-	if err := waitForWorker(loadCtx, address, worker, g.cfg.workerStartTimeout); err != nil {
+	if err := waitForWorker(loadCtx, address, worker, g.cfg.workerStartTimeout, &startupOutput); err != nil {
 		_ = executil.KillProcessTree(cmd)
 		<-worker.done
 		if cause := context.Cause(loadCtx); isLoadLivenessFailure(cause) {
@@ -699,47 +723,83 @@ func confirmAgentOnLoadError(ctx context.Context, monitor *loadMonitor, fallback
 	return fallback
 }
 
-func waitForWorker(ctx context.Context, address string, worker *modelWorker, timeout time.Duration) error {
+type startupOutputReader interface {
+	Len() int
+	String() string
+}
+
+func waitForWorker(ctx context.Context, address string, worker *modelWorker, timeout time.Duration, output ...startupOutputReader) error {
 	startupCtx, cancelStartup := context.WithTimeout(ctx, timeout)
 	defer cancelStartup()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	client := &http.Client{Timeout: time.Second}
-	probe := func() (bool, error) {
+	probe := func() (bool, string, error) {
 		probeCtx, cancel := context.WithTimeout(startupCtx, time.Second)
 		defer cancel()
 		request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "http://"+address+"/health", nil)
 		if err != nil {
-			return false, fmt.Errorf("creating worker readiness probe: %w", err)
+			return false, "", fmt.Errorf("creating worker readiness probe: %w", err)
 		}
 		resp, err := client.Do(request)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				return true, nil
-			}
+		if err != nil {
+			return false, "", nil
 		}
-		return false, nil
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<10))
+		if resp.StatusCode == http.StatusOK {
+			return true, "", nil
+		}
+		return false, fmt.Sprintf("status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body))), nil
 	}
+	lastDetail := ""
 	for {
-		ready, err := probe()
+		ready, detail, err := probe()
 		if err != nil || ready {
 			if ready {
 				log.Printf("tether-api: worker ready model=%q address=%s", worker.modelID, address)
 			}
+			if err != nil && len(output) > 0 {
+				return fmt.Errorf("%w%s", err, startupOutputSuffix(output[0]))
+			}
 			return err
+		}
+		if detail != "" {
+			lastDetail = detail
+			log.Printf("tether-api: worker not ready yet model=%q address=%s detail=%s", worker.modelID, address, detail)
 		}
 		select {
 		case <-startupCtx.Done():
 			if ctx.Err() != nil {
 				return fmt.Errorf("model worker startup canceled: %w", ctx.Err())
 			}
-			return fmt.Errorf("model worker did not become ready within %s", timeout)
+			return fmt.Errorf("model worker did not become ready within %s%s%s", timeout, detailSuffix(lastDetail), outputSuffix(output))
 		case <-worker.done:
-			return fmt.Errorf("model worker exited during startup: %v", worker.exitErr)
+			return fmt.Errorf("model worker exited during startup: %v%s%s", worker.exitErr, detailSuffix(lastDetail), outputSuffix(output))
 		case <-ticker.C:
 		}
 	}
+}
+
+func detailSuffix(detail string) string {
+	if strings.TrimSpace(detail) == "" {
+		return ""
+	}
+	return "\nlast health response: " + detail
+}
+
+func startupOutputSuffix(output startupOutputReader) string {
+	if output == nil || output.Len() == 0 {
+		return ""
+	}
+	return "\nstartup output:\n" + strings.TrimSpace(output.String())
+}
+
+func outputSuffix(output []startupOutputReader) string {
+	if len(output) == 0 {
+		return ""
+	}
+	return startupOutputSuffix(output[0])
 }
 
 func randomToken(bytes int) (string, error) {
