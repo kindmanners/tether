@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -146,6 +147,7 @@ func (l *loadLiveness) expire(generation uint64) {
 	l.active = false
 	l.expired = true
 	l.timer = nil
+	log.Printf("agent: model-load heartbeat timeout declared session=%q model=%q at=%s expiry=%s", l.sessionID, l.model, time.Now().UTC().Format(time.RFC3339Nano), l.expiry)
 	l.status = LoadLivenessStatus{
 		State: "Unavailable", Model: l.model,
 		Detail:   "Orchestrator Not Available: model loading stopped; terminating the managed RPC process to reclaim GPU memory.",

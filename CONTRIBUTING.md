@@ -16,7 +16,7 @@ and bug reports are all welcome.
 ## Development setup
 
 Tether is a Go project. The required Go toolchain is defined in
-[`go.mod`](go.mod); at present it is Go 1.27. Install Git and that Go version,
+[`go.mod`](go.mod); at present it is Go 1.27.2 Install Git and that Go version,
 then fork and clone the repository:
 
 ```bash

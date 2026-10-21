@@ -1,6 +1,6 @@
 module tether
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/wailsapp/wails/v2 v2.15.0

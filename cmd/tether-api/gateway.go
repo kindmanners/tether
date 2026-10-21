@@ -658,6 +658,7 @@ func (g *gateway) launch(ctx context.Context, modelID, modelPath string, plan pl
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = llamaServerEnvironment(os.Environ(), apiKey, planUsesLocalGPU(plan))
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	log.Printf("tether-api: starting llama-server model=%q address=%s placement=%s nodes=%s", modelID, address, plan.Mode, strings.Join(planNodeNames(plan), ", "))
 	releaseLifetime, err := executil.StartWithParentLifetime(cmd)
 	if err != nil {
 		return nil, confirmAgentOnLoadError(ctx, monitor, fmt.Errorf("starting model worker: %w", err))
@@ -723,6 +724,9 @@ func waitForWorker(ctx context.Context, address string, worker *modelWorker, tim
 	for {
 		ready, err := probe()
 		if err != nil || ready {
+			if ready {
+				log.Printf("tether-api: worker ready model=%q address=%s", worker.modelID, address)
+			}
 			return err
 		}
 		select {
